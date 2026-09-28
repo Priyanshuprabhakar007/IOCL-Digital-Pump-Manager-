@@ -7,7 +7,7 @@ interface AuthContextType {
   loading: boolean;
   login: (email: string, password: string) => Promise<{ success: boolean; error?: string }>;
   logout: () => Promise<void>;
-  refetchMe: () => Promise<void>;
+  refetchMe: () => Promise<boolean>;
   hasPermission: (perm: PermissionCode) => boolean;
   hasRole: (role: RoleCode) => boolean;
   switchDemoUser: (email: string) => Promise<{ success: boolean; error?: string }>;
@@ -19,36 +19,46 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [userCtx, setUserCtx] = useState<UserContext | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
 
-  const fetchMe = async () => {
+  const fetchMe = async (): Promise<boolean> => {
     setLoading(true);
     const res = await apiFetch<UserContext>('/api/v1/auth/me');
     if (res.success && res.data) {
       setUserCtx(res.data);
+      setLoading(false);
+      return true;
     } else {
       setUserCtx(null);
+      setLoading(false);
+      return false;
     }
-    setLoading(false);
   };
 
   useEffect(() => {
     fetchMe();
   }, []);
 
-  const login = async (email: string, password: string) => {
+  const login = async (email: string, password: string): Promise<{ success: boolean; error?: string }> => {
     const res = await apiFetch<any>('/api/v1/auth/login', {
       method: 'POST',
       body: JSON.stringify({ email, password }),
     });
 
-    if (res.success) {
-      await fetchMe();
-      return { success: true };
-    } else {
+    if (!res.success) {
       return {
         success: false,
         error: res.error?.message || 'Login failed. Check credentials.',
       };
     }
+
+    const meSuccess = await fetchMe();
+    if (!meSuccess) {
+      return {
+        success: false,
+        error: 'Session was created but could not be restored. Check cookie configuration.',
+      };
+    }
+
+    return { success: true };
   };
 
   const switchDemoUser = async (email: string) => {

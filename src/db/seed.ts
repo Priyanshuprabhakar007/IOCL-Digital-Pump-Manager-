@@ -6,6 +6,21 @@ import { ROLES, PERMISSIONS } from '../shared/constants';
 export async function seedDatabase(db: AppDatabase) {
   const existingUsers = await db.select().from(schema.users);
   if (existingUsers.length > 0) {
+    const requiredDemoEmails = [
+      'admin@iocl.in',
+      'wbso@iocl.in',
+      'kolkatado@iocl.in',
+      'fo.central@iocl.in',
+      'dealer.parkstreet@iocl.in',
+      'csp.parkstreet@iocl.in',
+    ];
+    const existingEmails = new Set(existingUsers.map(u => u.email));
+    const missing = requiredDemoEmails.filter(e => !existingEmails.has(e));
+    if (missing.length > 0) {
+      console.warn(`⚠️ [Seed Warning] Local database has existing users but is missing required demo accounts: ${missing.join(', ')}. Development login may fail for these accounts.`);
+    } else {
+      console.log(`✅ [Seed Check] All required demo accounts verified in local database (${requiredDemoEmails.length} accounts present).`);
+    }
     return; // Already seeded
   }
 

@@ -43,14 +43,38 @@ export function getAllowedOrigins(env?: Partial<EnvBindings>): string[] {
   return Array.from(new Set([...configured, ...devOrigins]));
 }
 
+/**
+ * Checks whether an incoming request Origin is permitted.
+ * Safe same-origin: if Origin matches request URL origin, it is permitted.
+ * Otherwise, it must exist in the explicitly configured allowedOrigins list.
+ */
+export function isOriginAllowed(origin: string | undefined, reqUrl: string, env?: Partial<EnvBindings>): boolean {
+  if (!origin) return true;
+
+  let requestOrigin = '';
+  try {
+    requestOrigin = new URL(reqUrl).origin;
+  } catch (e) {
+    // ignore malformed URLs
+  }
+
+  // Exact same-origin is safe and permitted
+  if (requestOrigin && origin === requestOrigin) {
+    return true;
+  }
+
+  const allowedOrigins = getAllowedOrigins(env);
+  return allowedOrigins.includes(origin);
+}
+
 // Strict CORS and State-Changing Origin Validation Middleware
 app.use('*', async (c, next) => {
   const origin = c.req.header('origin');
-  const allowedOrigins = getAllowedOrigins(c.env);
+  const allowed = isOriginAllowed(origin, c.req.url, c.env);
 
-  // For state-changing methods (POST, PUT, PATCH, DELETE), validate origin against exact approved list
+  // For state-changing methods (POST, PUT, PATCH, DELETE), validate origin against exact approved list or same-origin
   if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(c.req.method)) {
-    if (origin && !allowedOrigins.includes(origin)) {
+    if (origin && !allowed) {
       return c.json({
         success: false,
         data: null,
@@ -64,7 +88,7 @@ app.use('*', async (c, next) => {
 
   // Preflight OPTIONS handler
   if (c.req.method === 'OPTIONS') {
-    if (origin && allowedOrigins.includes(origin)) {
+    if (origin && allowed) {
       c.header('Access-Control-Allow-Origin', origin);
       c.header('Access-Control-Allow-Credentials', 'true');
       c.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
@@ -77,7 +101,7 @@ app.use('*', async (c, next) => {
   await next();
 
   // Attach CORS headers to responses for authorized origins
-  if (origin && allowedOrigins.includes(origin)) {
+  if (origin && allowed) {
     c.header('Access-Control-Allow-Origin', origin);
     c.header('Access-Control-Allow-Credentials', 'true');
   }

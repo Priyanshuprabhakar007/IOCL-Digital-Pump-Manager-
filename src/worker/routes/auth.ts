@@ -150,10 +150,11 @@ auth.post('/login', async (c) => {
     createdAt: nowIso,
   });
 
-  // Set HttpOnly Cookie
+  // Set HttpOnly Cookie (secure: true only in production to allow local HTTP development)
+  const isProduction = c.env?.ENVIRONMENT === 'production';
   setCookie(c, COOKIE_NAME, rawToken, {
     httpOnly: true,
-    secure: true,
+    secure: isProduction,
     sameSite: 'Lax',
     path: '/',
     maxAge: SESSION_DURATION_HOURS * 3600,
@@ -201,7 +202,12 @@ auth.post('/logout', requireAuth as any, async (c: AppContext) => {
     });
   }
 
-  deleteCookie(c, COOKIE_NAME, { path: '/' });
+  const isProduction = c.env?.ENVIRONMENT === 'production';
+  deleteCookie(c, COOKIE_NAME, {
+    path: '/',
+    secure: isProduction,
+    sameSite: 'Lax',
+  });
 
   return c.json({
     success: true,

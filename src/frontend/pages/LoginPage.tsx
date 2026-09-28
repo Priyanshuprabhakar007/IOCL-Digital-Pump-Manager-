@@ -34,8 +34,14 @@ export const LoginPage: React.FC = () => {
   const handleDemoClick = async (demoEmail: string) => {
     setError(null);
     setLoading(true);
-    await switchDemoUser(demoEmail);
+
+    const result = await switchDemoUser(demoEmail);
+
     setLoading(false);
+
+    if (!result.success) {
+      setError(result.error || 'Demo login failed');
+    }
   };
 
   return (

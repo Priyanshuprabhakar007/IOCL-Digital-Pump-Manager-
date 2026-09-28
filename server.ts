@@ -9,6 +9,9 @@ async function startServer() {
   const server = express();
   const port = 3000;
 
+  // Support reverse-proxy HTTPS preview (Google AI Studio / Cloud Run)
+  server.set('trust proxy', true);
+
   const localDb = createLocalD1Database();
   try {
     await seedDatabase(getDb(localDb));
@@ -68,7 +71,14 @@ async function startServer() {
           body: body && body.length > 0 ? (body as unknown as BodyInit) : undefined,
         });
 
-        const webRes = await app.fetch(webReq, { DB: localDb, DOCUMENTS_BUCKET: localR2 as any });
+        const webRes = await app.fetch(webReq, {
+          DB: localDb,
+          DOCUMENTS_BUCKET: localR2 as any,
+          ENVIRONMENT: process.env.ENVIRONMENT || 'development',
+          ALLOWED_ORIGINS:
+            process.env.ALLOWED_ORIGINS ||
+            'http://localhost:3000,http://127.0.0.1:3000',
+        });
 
         res.status(webRes.status);
         webRes.headers.forEach((value, key) => {
