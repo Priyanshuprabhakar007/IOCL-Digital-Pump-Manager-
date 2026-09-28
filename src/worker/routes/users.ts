@@ -1,6 +1,8 @@
 import { Hono } from 'hono';
 import bcrypt from 'bcryptjs';
 import { getDb } from '../../db';
+import * as schema from '../../db/schema';
+import { eq } from 'drizzle-orm';
 import { UserRepository } from '../repositories/userRepository';
 import { ScopeRepository } from '../repositories/scopeRepository';
 import { HierarchyRepository } from '../repositories/hierarchyRepository';
@@ -64,18 +66,84 @@ users.post('/', requirePermission(PERMISSIONS.USERS_CREATE) as any, async (c: Ap
   const payload = parseResult.data;
   const db = getDb(c.env.DB);
   const userRepo = new UserRepository(db);
+  const scopeRepo = new ScopeRepository(db);
+  const hierarchyRepo = new HierarchyRepository(db);
+  const outletRepo = new OutletRepository(db);
   const auditRepo = new AuditRepository(db);
 
-  // Role Ceiling Check: lower roles cannot grant roles above their administrative level
+  // 1. Role Ceiling Check: non-global administrators cannot grant equal or higher role, and can never grant ADMIN
   const roleCheck = ScopeService.validateRoleCeiling(c.var.user, payload.roleCodes);
   if (!roleCheck.allowed) {
     return c.json({
       success: false,
       data: null,
-      error: { code: 'ROLE_CEILING_EXCEEDED', message: roleCheck.message || 'Cannot grant roles higher than your administrative level.' },
+      error: { code: 'ROLE_CEILING_EXCEEDED', message: roleCheck.message || 'Cannot grant roles equal to or higher than your administrative level.' },
     }, 403);
   }
 
+  // 2. Validate Initial Scope before any database changes
+  let derivedScope: {
+    stateId: string | null;
+    divisionId: string | null;
+    salesAreaId: string | null;
+    outletId: string | null;
+  } | null = null;
+
+  if (!c.var.user.isGlobalScope && !payload.initialScope) {
+    return c.json({
+      success: false,
+      data: null,
+      error: {
+        code: 'VALIDATION_ERROR',
+        message: 'initialScope is required when provisioning users by non-global administrators to ensure safe organizational boundary placement.',
+      },
+    }, 400);
+  }
+
+  if (payload.initialScope) {
+    if (payload.initialScope.scopeLevel === 'GLOBAL' && !c.var.user.isGlobalScope) {
+      return c.json({
+        success: false,
+        data: null,
+        error: { code: 'FORBIDDEN', message: 'Only accounts with GLOBAL scope authority can assign GLOBAL initial scope.' },
+      }, 403);
+    }
+
+    const validation = await ScopeService.validateAndDeriveScope(payload.initialScope, hierarchyRepo, outletRepo);
+    if (!validation.valid) {
+      return c.json({
+        success: false,
+        data: null,
+        error: {
+          code: 'INVALID_SCOPE_HIERARCHY',
+          message: validation.message || 'Invalid organizational hierarchy relationship for requested initial scope.',
+        },
+      }, 400);
+    }
+
+    derivedScope = validation.derived;
+
+    // Confirm initial scope is strictly inside actor authority
+    if (payload.initialScope.scopeLevel === 'STATE' && derivedScope.stateId) {
+      if (!await ScopeService.canAccessState(c.var.user, derivedScope.stateId)) {
+        return c.json({ success: false, data: null, error: { code: 'FORBIDDEN', message: 'Cannot assign initial scope outside your assigned State Office.' } }, 403);
+      }
+    } else if (payload.initialScope.scopeLevel === 'DIVISION' && derivedScope.divisionId) {
+      if (!await ScopeService.canAccessDivision(c.var.user, derivedScope.divisionId, hierarchyRepo)) {
+        return c.json({ success: false, data: null, error: { code: 'FORBIDDEN', message: 'Cannot assign initial scope outside your assigned Divisional Office.' } }, 403);
+      }
+    } else if (payload.initialScope.scopeLevel === 'SALES_AREA' && derivedScope.salesAreaId) {
+      if (!await ScopeService.canAccessSalesArea(c.var.user, derivedScope.salesAreaId, hierarchyRepo)) {
+        return c.json({ success: false, data: null, error: { code: 'FORBIDDEN', message: 'Cannot assign initial scope outside your assigned Sales Area.' } }, 403);
+      }
+    } else if (payload.initialScope.scopeLevel === 'OUTLET' && derivedScope.outletId) {
+      if (!await ScopeService.canAccessOutlet(c.var.user, derivedScope.outletId, outletRepo)) {
+        return c.json({ success: false, data: null, error: { code: 'FORBIDDEN', message: 'Cannot assign initial scope for an outlet outside your assigned scope.' } }, 403);
+      }
+    }
+  }
+
+  // 3. Email duplication check
   const existingEmail = await userRepo.findByEmail(payload.email);
   if (existingEmail) {
     return c.json({
@@ -89,9 +157,11 @@ users.post('/', requirePermission(PERMISSIONS.USERS_CREATE) as any, async (c: Ap
   const nowIso = new Date().toISOString();
   const userId = `usr-${crypto.randomUUID()}`;
 
-  let newUser;
+  // 4. Atomic Bootstrap: user + roles + initial scope (rollback on failure to prevent orphaned users)
+  let createdUser;
+  let createdScope = null;
   try {
-    newUser = await userRepo.createUser({
+    createdUser = await userRepo.createUser({
       id: userId,
       empCode: payload.empCode,
       name: payload.name,
@@ -103,11 +173,31 @@ users.post('/', requirePermission(PERMISSIONS.USERS_CREATE) as any, async (c: Ap
       createdAt: nowIso,
       updatedAt: nowIso,
     });
+
+    if (payload.initialScope && derivedScope) {
+      createdScope = await scopeRepo.createScopeAssignment({
+        id: `usa-${crypto.randomUUID()}`,
+        userId: createdUser.id,
+        scopeLevel: payload.initialScope.scopeLevel,
+        stateId: derivedScope.stateId,
+        divisionId: derivedScope.divisionId,
+        salesAreaId: derivedScope.salesAreaId,
+        outletId: derivedScope.outletId,
+        createdAt: nowIso,
+        createdBy: c.var.user.user.id,
+      });
+    }
   } catch (err: any) {
+    // Rollback to prevent orphaned user
+    try {
+      await db.delete(schema.users).where(eq(schema.users.id, userId));
+    } catch (cleanupErr) {
+      console.error('Failed to rollback user creation:', cleanupErr);
+    }
     return c.json({
       success: false,
       data: null,
-      error: { code: 'ROLE_MAPPING_ERROR', message: err.message || 'Failed to resolve all requested role mappings.' },
+      error: { code: 'USER_CREATION_FAILED', message: err.message || 'Failed to complete atomic user creation.' },
     }, 400);
   }
 
@@ -116,8 +206,14 @@ users.post('/', requirePermission(PERMISSIONS.USERS_CREATE) as any, async (c: Ap
     userId: c.var.user.user.id,
     action: 'USER_CREATE',
     entityType: 'USER',
-    entityId: newUser.id,
-    newValue: { empCode: newUser.empCode, name: newUser.name, email: newUser.email, roles: payload.roleCodes },
+    entityId: createdUser.id,
+    newValue: {
+      empCode: createdUser.empCode,
+      name: createdUser.name,
+      email: createdUser.email,
+      roles: payload.roleCodes,
+      initialScope: createdScope,
+    },
     ipAddress: c.req.header('cf-connecting-ip') || null,
     userAgent: c.req.header('user-agent') || null,
     createdAt: nowIso,
@@ -125,7 +221,10 @@ users.post('/', requirePermission(PERMISSIONS.USERS_CREATE) as any, async (c: Ap
 
   return c.json({
     success: true,
-    data: newUser,
+    data: {
+      ...createdUser,
+      initialScope: createdScope,
+    },
     error: null,
   }, 201);
 });

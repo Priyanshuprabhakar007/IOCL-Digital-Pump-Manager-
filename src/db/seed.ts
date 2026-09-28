@@ -58,7 +58,8 @@ export async function seedDatabase(db: AppDatabase) {
   ].map(pId => ({ roleId: 'role-so', permissionId: pId }));
 
   const divOfficePerms = [
-    'perm-u-r', 'perm-h-r', 'perm-o-r', 'perm-o-u',
+    'perm-u-r', 'perm-u-c', 'perm-u-u',
+    'perm-h-r', 'perm-o-r', 'perm-o-u',
     'perm-s-r', 'perm-d-r', 'perm-d-w', 'perm-a-r'
   ].map(pId => ({ roleId: 'role-do', permissionId: pId }));
 

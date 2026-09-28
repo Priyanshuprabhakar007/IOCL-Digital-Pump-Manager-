@@ -1,16 +1,43 @@
-import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
+import { createRequire } from 'module';
+
+const nodeRequire = typeof require !== 'undefined' ? require : createRequire(import.meta.url);
+
+interface SqliteStatement {
+  get(...params: any[]): any;
+  run(...params: any[]): { changes: number; lastInsertRowid: number | bigint };
+  all(...params: any[]): any[];
+  raw?(enable: boolean): { all(...params: any[]): any[] };
+  values?(...params: any[]): any[];
+}
+
+interface SqliteDb {
+  exec(sql: string): void;
+  prepare?(sql: string): SqliteStatement;
+  query?(sql: string): SqliteStatement;
+  close(): void;
+}
 
 export class LocalD1PreparedStatement {
-  constructor(private db: Database.Database, private sql: string, private params: any[] = []) {}
+  constructor(private db: SqliteDb, private sql: string, private params: any[] = []) {}
 
   bind(...values: any[]): D1PreparedStatement {
     return new LocalD1PreparedStatement(this.db, this.sql, values) as unknown as D1PreparedStatement;
   }
 
+  private getStatement(): SqliteStatement {
+    if (typeof this.db.query === 'function') {
+      return this.db.query(this.sql);
+    }
+    if (typeof this.db.prepare === 'function') {
+      return this.db.prepare(this.sql);
+    }
+    throw new Error('Unsupported sqlite database instance');
+  }
+
   async first<T = unknown>(colName?: string): Promise<T | null> {
-    const stmt = this.db.prepare(this.sql);
+    const stmt = this.getStatement();
     const row = stmt.get(...this.params) as any;
     if (!row) return null;
     if (colName) return row[colName] ?? null;
@@ -18,7 +45,7 @@ export class LocalD1PreparedStatement {
   }
 
   async run<T = Record<string, unknown>>(): Promise<D1Result<T>> {
-    const stmt = this.db.prepare(this.sql);
+    const stmt = this.getStatement();
     const info = stmt.run(...this.params);
     return {
       results: [],
@@ -38,7 +65,7 @@ export class LocalD1PreparedStatement {
   }
 
   async all<T = Record<string, unknown>>(): Promise<D1Result<T>> {
-    const stmt = this.db.prepare(this.sql);
+    const stmt = this.getStatement();
     const results = stmt.all(...this.params) as T[];
     return {
       results,
@@ -58,22 +85,41 @@ export class LocalD1PreparedStatement {
   }
 
   async raw<T = unknown[]>(options?: { columnNames?: boolean }): Promise<any> {
-    const stmt = this.db.prepare(this.sql);
-    return stmt.raw(true).all(...this.params);
+    const stmt = this.getStatement();
+    if (typeof stmt.values === 'function') {
+      return stmt.values(...this.params);
+    }
+    if (typeof stmt.raw === 'function') {
+      return stmt.raw(true).all(...this.params);
+    }
+    return stmt.all(...this.params);
   }
 }
 
 export class LocalD1Database {
-  private db: Database.Database;
+  private db: SqliteDb;
 
   constructor(dbPath: string) {
     const dir = path.dirname(dbPath);
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
     }
-    this.db = new Database(dbPath);
-    this.db.pragma('journal_mode = WAL');
-    this.db.pragma('foreign_keys = ON');
+
+    const isBun = typeof (globalThis as any).Bun !== 'undefined';
+    if (isBun) {
+      const { Database: BunDatabase } = nodeRequire('bun:sqlite');
+      const bdb = new BunDatabase(dbPath);
+      bdb.exec('PRAGMA journal_mode = WAL;');
+      bdb.exec('PRAGMA foreign_keys = ON;');
+      this.db = bdb;
+    } else {
+      const BetterSqlite = nodeRequire('better-sqlite3');
+      const sdb = new BetterSqlite(dbPath);
+      sdb.pragma('journal_mode = WAL');
+      sdb.pragma('foreign_keys = ON');
+      this.db = sdb;
+    }
+
     this.initSchema();
   }
 
@@ -109,6 +155,7 @@ export class LocalD1Database {
       duration: 1,
     };
   }
+
   close(): void {
     try {
       this.db.close();

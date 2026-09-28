@@ -61,36 +61,36 @@ documents.get('/', requirePermission(PERMISSIONS.DOCUMENTS_READ) as any, async (
 });
 
 /**
- * Helper to derive validated MIME type from binary magic bytes.
+ * Helper to derive validated MIME type strictly from binary magic bytes.
  * Never trust browser-supplied metadata alone.
+ *
+ * Allowed signatures:
+ * - PDF: %PDF- (0x25 0x50 0x44 0x46 0x2D)
+ * - PNG: 0x89 0x50 0x4E 0x47 0x0D 0x0A 0x1A 0x0A
+ * - JPEG: 0xFF 0xD8 0xFF
  */
-function deriveMimeType(buffer: ArrayBuffer, fallbackType?: string): string | null {
+function deriveMimeType(buffer: ArrayBuffer): string | null {
   const bytes = new Uint8Array(buffer);
-  if (bytes.length < 4) return null;
 
-  // PDF: %PDF- (0x25, 0x50, 0x44, 0x46)
-  if (bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46) {
+  // PDF signature: %PDF- (0x25, 0x50, 0x44, 0x46, 0x2D)
+  if (bytes.length >= 5 &&
+      bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46 && bytes[4] === 0x2D) {
     return 'application/pdf';
   }
 
-  // PNG: \x89PNG\r\n\x1a\n (0x89, 0x50, 0x4E, 0x47)
+  // PNG signature: \x89PNG\r\n\x1a\n (0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A)
   if (bytes.length >= 8 &&
       bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4E && bytes[3] === 0x47 &&
       bytes[4] === 0x0D && bytes[5] === 0x0A && bytes[6] === 0x1A && bytes[7] === 0x0A) {
     return 'image/png';
   }
 
-  // JPEG: 0xFF, 0xD8, 0xFF
+  // JPEG signature: 0xFF, 0xD8, 0xFF
   if (bytes.length >= 3 && bytes[0] === 0xFF && bytes[1] === 0xD8 && bytes[2] === 0xFF) {
     return 'image/jpeg';
   }
 
-  // If valid MIME provided by client and buffer matches text or standard document format
-  if (fallbackType && ['application/pdf', 'image/png', 'image/jpeg'].includes(fallbackType)) {
-    // If magic bytes were not strict, allow if reported matches and signature is not contradictory
-    return fallbackType;
-  }
-
+  // Strictly reject unknown binary content; do NOT fall back to client file.type
   return null;
 }
 
@@ -167,7 +167,7 @@ documents.post('/', requirePermission(PERMISSIONS.DOCUMENTS_WRITE) as any, async
   }
 
   const rawFilename = file.name || 'document.pdf';
-  const derivedMimeType = deriveMimeType(fileBuffer, file.type);
+  const derivedMimeType = deriveMimeType(fileBuffer);
   if (!derivedMimeType) {
     return c.json({
       success: false,

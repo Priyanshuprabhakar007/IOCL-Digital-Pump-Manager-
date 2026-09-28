@@ -2,12 +2,39 @@ import express from 'express';
 import { createServer as createViteServer } from 'vite';
 import app from './src/worker/app';
 import { createLocalD1Database } from './src/db/localD1';
+import { getDb } from './src/db';
+import { seedDatabase } from './src/db/seed';
 
 async function startServer() {
   const server = express();
-  const port = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+  const port = 3000;
 
   const localDb = createLocalD1Database();
+  try {
+    await seedDatabase(getDb(localDb));
+  } catch (err) {
+    console.error('Initial DB seeding notice:', err);
+  }
+
+  const localR2 = {
+    storage: new Map<string, { buffer: any; metadata: any }>(),
+    async put(key: string, value: any, options?: any) {
+      this.storage.set(key, { buffer: value, metadata: options });
+      return { key, size: value?.byteLength || 0 };
+    },
+    async get(key: string) {
+      const item = this.storage.get(key);
+      if (!item) return null;
+      return {
+        body: item.buffer,
+        arrayBuffer: async () => item.buffer,
+        ...item.metadata,
+      };
+    },
+    async delete(key: string) {
+      this.storage.delete(key);
+    },
+  };
 
   // Route API requests to Hono worker app
   server.use(async (req, res, next) => {
@@ -41,7 +68,7 @@ async function startServer() {
           body: body && body.length > 0 ? (body as unknown as BodyInit) : undefined,
         });
 
-        const webRes = await app.fetch(webReq, { DB: localDb, DOCUMENTS_BUCKET: {} as any });
+        const webRes = await app.fetch(webReq, { DB: localDb, DOCUMENTS_BUCKET: localR2 as any });
 
         res.status(webRes.status);
         webRes.headers.forEach((value, key) => {

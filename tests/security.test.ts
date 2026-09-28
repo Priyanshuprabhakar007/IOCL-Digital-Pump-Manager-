@@ -99,6 +99,39 @@ describe('IOCL Digital Pump Manager Phase 1B Security Hardening Suite', () => {
     });
   };
 
+  // Helper to build real multipart/form-data Request with raw binary buffer
+  const createBinaryMultipartDocRequest = (
+    url: string,
+    cookie: string,
+    outletId: string,
+    fileBuffer: Uint8Array,
+    fileName = 'document.bin',
+    mimeType = 'application/octet-stream',
+    origin = 'http://localhost:3000'
+  ) => {
+    const boundary = '----WebKitFormBoundaryBinary' + Math.random().toString(36).substring(7);
+    const headerPart = Buffer.from(
+      `--${boundary}\r\n` +
+      `Content-Disposition: form-data; name="outletId"\r\n\r\n` +
+      `${outletId}\r\n` +
+      `--${boundary}\r\n` +
+      `Content-Disposition: form-data; name="file"; filename="${fileName}"\r\n` +
+      `Content-Type: ${mimeType}\r\n\r\n`
+    );
+    const footerPart = Buffer.from(`\r\n--${boundary}--\r\n`);
+    const fullBody = Buffer.concat([headerPart, fileBuffer, footerPart]);
+
+    return new Request(url, {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        'Content-Type': `multipart/form-data; boundary=${boundary}`,
+        Origin: origin,
+      },
+      body: fullBody,
+    });
+  };
+
   // 1. Admin GLOBAL login works
   it('1. Admin GLOBAL login works', async () => {
     const { res, json } = await loginAs('admin@iocl.in');
@@ -643,5 +676,189 @@ describe('IOCL Digital Pump Manager Phase 1B Security Hardening Suite', () => {
 
     const res = await app.fetch(req, env);
     expect(res.status).toBe(403);
+  });
+
+  // 28. ROLE CEILINGS: State Office cannot create another STATE_OFFICE
+  it('28. State Office cannot create another STATE_OFFICE', async () => {
+    const { cookie } = await loginAs('wbso@iocl.in');
+    const res = await app.fetch(
+      new Request('http://localhost/api/v1/users', {
+        method: 'POST',
+        headers: { Cookie: cookie, 'Content-Type': 'application/json', Origin: 'http://localhost:3000' },
+        body: JSON.stringify({
+          empCode: 'IOCL-SO-002',
+          name: 'Another State Officer',
+          email: 'so2.wb@iocl.in',
+          phone: '9830000099',
+          password: 'Password@123',
+          roleCodes: ['STATE_OFFICE'],
+          initialScope: { scopeLevel: 'STATE', stateId: 'state-wb' },
+        }),
+      }),
+      env
+    );
+    expect(res.status).toBe(403);
+    const json = (await res.json()) as any;
+    expect(json.error.code).toBe('ROLE_CEILING_EXCEEDED');
+  });
+
+  // 29. ROLE CEILINGS: Divisional Office cannot create another DIVISIONAL_OFFICE
+  it('29. Divisional Office cannot create another DIVISIONAL_OFFICE', async () => {
+    const { cookie } = await loginAs('kolkatado@iocl.in');
+    const res = await app.fetch(
+      new Request('http://localhost/api/v1/users', {
+        method: 'POST',
+        headers: { Cookie: cookie, 'Content-Type': 'application/json', Origin: 'http://localhost:3000' },
+        body: JSON.stringify({
+          empCode: 'IOCL-DO-002',
+          name: 'Another Div Officer',
+          email: 'do2.kol@iocl.in',
+          phone: '9830000098',
+          password: 'Password@123',
+          roleCodes: ['DIVISIONAL_OFFICE'],
+          initialScope: { scopeLevel: 'DIVISION', divisionId: 'div-kol' },
+        }),
+      }),
+      env
+    );
+    expect(res.status).toBe(403);
+    const json = (await res.json()) as any;
+    expect(json.error.code).toBe('ROLE_CEILING_EXCEEDED');
+  });
+
+  // 30. NEW-USER BOOTSTRAP: State Office can create FO with valid initial child scope
+  it('30. State Office can create FO with valid initial child scope', async () => {
+    const { cookie } = await loginAs('wbso@iocl.in');
+    const res = await app.fetch(
+      new Request('http://localhost/api/v1/users', {
+        method: 'POST',
+        headers: { Cookie: cookie, 'Content-Type': 'application/json', Origin: 'http://localhost:3000' },
+        body: JSON.stringify({
+          empCode: 'IOCL-FO-NEW',
+          name: 'New Authorized Field Officer',
+          email: 'fo.newchild@iocl.in',
+          phone: '9830000097',
+          password: 'Password@123',
+          roleCodes: ['FIELD_OFFICER'],
+          initialScope: { scopeLevel: 'SALES_AREA', salesAreaId: 'sa-cen' },
+        }),
+      }),
+      env
+    );
+    expect(res.status).toBe(201);
+    const json = (await res.json()) as any;
+    expect(json.success).toBe(true);
+    expect(json.data.email).toBe('fo.newchild@iocl.in');
+    expect(json.data.initialScope.salesAreaId).toBe('sa-cen');
+
+    // Confirm scope assignment in database
+    const user = await env.DB.prepare("SELECT * FROM users WHERE email = 'fo.newchild@iocl.in'").first();
+    expect(user).toBeDefined();
+    const scopes = await env.DB.prepare("SELECT * FROM user_scope_assignments WHERE user_id = ?").bind(user.id).all();
+    expect(scopes.results.length).toBe(1);
+    expect(scopes.results[0].sales_area_id).toBe('sa-cen');
+  });
+
+  // 31. NEW-USER BOOTSTRAP: user creation with unauthorized initial scope fails without orphaned user
+  it('31. user creation with unauthorized initial scope fails without orphaned user', async () => {
+    const { cookie } = await loginAs('wbso@iocl.in'); // Scoped to West Bengal
+
+    const res = await app.fetch(
+      new Request('http://localhost/api/v1/users', {
+        method: 'POST',
+        headers: { Cookie: cookie, 'Content-Type': 'application/json', Origin: 'http://localhost:3000' },
+        body: JSON.stringify({
+          empCode: 'IOCL-FO-UNAUTH',
+          name: 'Unauthorized FO',
+          email: 'unauth.fo.orphan@iocl.in',
+          phone: '9830000096',
+          password: 'Password@123',
+          roleCodes: ['FIELD_OFFICER'],
+          initialScope: { scopeLevel: 'STATE', stateId: 'state-pb' }, // Punjab is unauthorized for WBSO
+        }),
+      }),
+      env
+    );
+
+    expect(res.status).toBe(403);
+    const json = (await res.json()) as any;
+    expect(json.error.code).toBe('FORBIDDEN');
+
+    // Verify database has NO orphaned user
+    const checkUser = await env.DB.prepare("SELECT * FROM users WHERE email = 'unauth.fo.orphan@iocl.in'").first();
+    expect(checkUser).toBeNull();
+  });
+
+  // 32. FILE MIME VALIDATION: fake PDF MIME with invalid PDF bytes is rejected
+  it('32. fake PDF MIME with invalid PDF bytes is rejected', async () => {
+    const { cookie } = await loginAs('dealer.parkstreet@iocl.in');
+
+    const fakePdfBytes = Buffer.from('FAKE NOT A PDF AT ALL');
+    const req = createBinaryMultipartDocRequest(
+      'http://localhost/api/v1/documents',
+      cookie,
+      'ro-1001',
+      fakePdfBytes,
+      'fake.pdf',
+      'application/pdf'
+    );
+
+    const res = await app.fetch(req, env);
+    expect(res.status).toBe(400);
+    const json = (await res.json()) as any;
+    expect(json.error.code).toBe('VALIDATION_ERROR');
+    expect(json.error.message).toContain('Invalid file format');
+  });
+
+  // 33. FILE MIME VALIDATION: valid PDF/PNG/JPEG signatures accepted
+  it('33. valid PDF/PNG/JPEG signatures accepted', async () => {
+    const { cookie } = await loginAs('dealer.parkstreet@iocl.in');
+
+    // 1. Valid PDF signature (%PDF-)
+    const pdfBytes = Buffer.concat([Buffer.from('%PDF-1.7\n'), Buffer.from('PDF content stream')]);
+    const pdfReq = createBinaryMultipartDocRequest(
+      'http://localhost/api/v1/documents',
+      cookie,
+      'ro-1001',
+      pdfBytes,
+      'valid.pdf',
+      'application/pdf'
+    );
+    const pdfRes = await app.fetch(pdfReq, env);
+    expect(pdfRes.status).toBe(201);
+    const pdfJson = (await pdfRes.json()) as any;
+    expect(pdfJson.data.mimeType).toBe('application/pdf');
+
+    // 2. Valid PNG signature (\x89PNG\r\n\x1a\n)
+    const pngHeader = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+    const pngBytes = Buffer.concat([pngHeader, Buffer.from('PNG image binary payload')]);
+    const pngReq = createBinaryMultipartDocRequest(
+      'http://localhost/api/v1/documents',
+      cookie,
+      'ro-1001',
+      pngBytes,
+      'valid.png',
+      'image/png'
+    );
+    const pngRes = await app.fetch(pngReq, env);
+    expect(pngRes.status).toBe(201);
+    const pngJson = (await pngRes.json()) as any;
+    expect(pngJson.data.mimeType).toBe('image/png');
+
+    // 3. Valid JPEG signature (\xFF\xD8\xFF)
+    const jpegHeader = Buffer.from([0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10]);
+    const jpegBytes = Buffer.concat([jpegHeader, Buffer.from('JPEG photo binary payload')]);
+    const jpegReq = createBinaryMultipartDocRequest(
+      'http://localhost/api/v1/documents',
+      cookie,
+      'ro-1001',
+      jpegBytes,
+      'valid.jpg',
+      'image/jpeg'
+    );
+    const jpegRes = await app.fetch(jpegReq, env);
+    expect(jpegRes.status).toBe(201);
+    const jpegJson = (await jpegRes.json()) as any;
+    expect(jpegJson.data.mimeType).toBe('image/jpeg');
   });
 });

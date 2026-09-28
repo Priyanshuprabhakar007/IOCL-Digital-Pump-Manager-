@@ -22,7 +22,8 @@ export function getAllowedOrigins(env?: Partial<EnvBindings>): string[] {
     ? env.ALLOWED_ORIGINS.split(',').map(s => s.trim()).filter(Boolean)
     : [];
 
-  const isDev = !env?.ENVIRONMENT || env.ENVIRONMENT === 'development' || (typeof process !== 'undefined' && process.env.NODE_ENV !== 'production');
+  const currentEnv = env?.ENVIRONMENT || (typeof process !== 'undefined' ? process.env.ENVIRONMENT : undefined) || 'development';
+  const isDev = currentEnv === 'development';
 
   const devOrigins = isDev ? [
     'http://localhost:3000',

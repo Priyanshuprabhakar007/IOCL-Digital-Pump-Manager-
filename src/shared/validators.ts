@@ -17,6 +17,30 @@ export const ValidRoleCodes = [
 
 export const RoleCodeSchema = z.enum(ValidRoleCodes);
 
+export const InitialScopePayloadSchema = z.discriminatedUnion('scopeLevel', [
+  z.object({
+    scopeLevel: z.literal('GLOBAL'),
+  }).strict(),
+  z.object({
+    scopeLevel: z.literal('STATE'),
+    stateId: z.string().min(1, 'stateId is required for STATE scope'),
+  }).strict(),
+  z.object({
+    scopeLevel: z.literal('DIVISION'),
+    divisionId: z.string().min(1, 'divisionId is required for DIVISION scope'),
+  }).strict(),
+  z.object({
+    scopeLevel: z.literal('SALES_AREA'),
+    salesAreaId: z.string().min(1, 'salesAreaId is required for SALES_AREA scope'),
+  }).strict(),
+  z.object({
+    scopeLevel: z.literal('OUTLET'),
+    outletId: z.string().min(1, 'outletId is required for OUTLET scope'),
+  }).strict(),
+]);
+
+export type InitialScopePayload = z.infer<typeof InitialScopePayloadSchema>;
+
 export const UserCreateSchema = z.object({
   empCode: z.string().min(3, 'Employee code must be at least 3 characters'),
   name: z.string().min(2, 'Name is required'),
@@ -25,6 +49,7 @@ export const UserCreateSchema = z.object({
   password: z.string().min(8, 'Password must be at least 8 characters'),
   roleCodes: z.array(RoleCodeSchema).min(1, 'At least one role is required'),
   status: z.enum(['ACTIVE', 'INACTIVE', 'SUSPENDED']).default('ACTIVE'),
+  initialScope: InitialScopePayloadSchema.optional(),
 });
 
 export const UserUpdateSchema = z.object({

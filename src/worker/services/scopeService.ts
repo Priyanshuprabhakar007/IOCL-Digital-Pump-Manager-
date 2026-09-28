@@ -555,16 +555,17 @@ export class ScopeService {
     for (const requestedRole of targetRoles) {
       const requestedLevel = ScopeService.getRoleLevel(requestedRole);
 
-      if (requestedRole === 'ADMIN' && !actorCtx.isGlobalScope) {
-        return { allowed: false, message: 'Only GLOBAL Admins can grant the ADMIN role' };
+      // Never allow non-global users to grant ADMIN
+      if (requestedRole === 'ADMIN') {
+        return { allowed: false, message: 'Only accounts with explicit GLOBAL administrative scope can grant the ADMIN role.' };
       }
 
-      if (requestedRole === 'STATE_OFFICE' && actorMaxLevel < 4) {
-        return { allowed: false, message: 'You do not have administrative level to grant STATE_OFFICE role' };
-      }
-
-      if (requestedLevel > actorMaxLevel) {
-        return { allowed: false, message: `Cannot grant role ${requestedRole} which is higher than your role level` };
+      // Non-global administrators must not grant a role equal to or higher than their own administrative level
+      if (requestedLevel >= actorMaxLevel) {
+        return {
+          allowed: false,
+          message: `Cannot grant role '${requestedRole}' which is equal to or higher than your administrative level.`,
+        };
       }
     }
 
