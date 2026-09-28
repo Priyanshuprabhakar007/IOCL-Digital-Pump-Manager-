@@ -434,8 +434,8 @@ fuelReceipts.patch('/fuel-receipt-lines/:lineId', requirePermission(PERMISSIONS.
   // Find line and parent receipt
   const [existingLine] = await db
     .select()
-    .from(require('../../db/schema').fuelReceiptTankLines)
-    .where(require('drizzle-orm').eq(require('../../db/schema').fuelReceiptTankLines.id, lineId));
+    .from(schema.fuelReceiptTankLines)
+    .where(eq(schema.fuelReceiptTankLines.id, lineId));
 
   if (!existingLine) {
     return c.json({ success: false, data: null, error: { code: 'NOT_FOUND', message: 'Receipt line not found' } }, 404);
@@ -587,6 +587,13 @@ fuelReceipts.patch('/fuel-receipt-lines/:lineId', requirePermission(PERMISSIONS.
   });
 
   if (!res.success || !res.line) {
+    if (res.finalized) {
+      return c.json({
+        success: false,
+        data: null,
+        error: { code: 'RECEIPT_FINALIZED', message: 'Fuel receipt is finalized and cannot be modified.' },
+      }, 409);
+    }
     return c.json({
       success: false,
       data: null,

@@ -1976,52 +1976,55 @@ export class PumpRepository {
   ): Promise<{ success: boolean; receipt: FuelReceipt | null; shiftClosed?: boolean; error?: string }> {
     const sealVerifiedNum = receiptData.sealVerified ? 1 : 0;
 
+    const [shift] = await this.db.select().from(schema.operationalShifts).where(eq(schema.operationalShifts.id, receiptData.operationalShiftId));
+    if (!shift || shift.status !== 'OPEN') {
+      return { success: false, receipt: null, shiftClosed: true, error: 'SHIFT_CLOSED' };
+    }
+
+    const headerInsert = this.db.insert(schema.fuelReceipts).values({
+      id: receiptData.id,
+      outletId: receiptData.outletId,
+      operationalShiftId: receiptData.operationalShiftId,
+      ttNumber: receiptData.ttNumber,
+      invoiceNumber: receiptData.invoiceNumber,
+      invoiceDate: receiptData.invoiceDate,
+      arrivalAt: receiptData.arrivalAt,
+      sealVerified: sealVerifiedNum === 1,
+      sealExceptionReason: receiptData.sealExceptionReason || null,
+      status: 'ARRIVED',
+      recordedByUserId: receiptData.recordedByUserId,
+      createdAt: receiptData.createdAt,
+      updatedAt: receiptData.updatedAt,
+    });
+
+    const lineInserts = linesData.map(line =>
+      this.db.insert(schema.fuelReceiptTankLines).values({
+        id: line.id,
+        fuelReceiptId: receiptData.id,
+        tankId: line.tankId,
+        productId: line.productId,
+        invoiceQuantityMilliunits: line.invoiceQuantityMilliunits,
+        densityMilliunits: line.densityMilliunits || null,
+        temperatureMilliunits: line.temperatureMilliunits || null,
+        invoiceDensityMilliunits: line.invoiceDensityMilliunits || null,
+        densityVarianceMilliunits: line.densityVarianceMilliunits || null,
+        qualityStatus: line.qualityStatus,
+        appliedToleranceSettingId: line.appliedToleranceSettingId || null,
+        appliedDensityToleranceMilliunits: line.appliedDensityToleranceMilliunits || null,
+        createdAt: line.createdAt,
+        updatedAt: line.updatedAt,
+      })
+    );
+
     try {
-      await this.db.transaction(async (tx) => {
-        const [shift] = await tx.select().from(schema.operationalShifts).where(eq(schema.operationalShifts.id, receiptData.operationalShiftId));
-        if (!shift || shift.status !== 'OPEN') {
-          throw new Error('SHIFT_CLOSED');
-        }
-
-        await tx.insert(schema.fuelReceipts).values({
-          id: receiptData.id,
-          outletId: receiptData.outletId,
-          operationalShiftId: receiptData.operationalShiftId,
-          ttNumber: receiptData.ttNumber,
-          invoiceNumber: receiptData.invoiceNumber,
-          invoiceDate: receiptData.invoiceDate,
-          arrivalAt: receiptData.arrivalAt,
-          sealVerified: sealVerifiedNum === 1,
-          sealExceptionReason: receiptData.sealExceptionReason || null,
-          status: 'ARRIVED',
-          recordedByUserId: receiptData.recordedByUserId,
-          createdAt: receiptData.createdAt,
-          updatedAt: receiptData.updatedAt,
-        });
-
-        for (const line of linesData) {
-          await tx.insert(schema.fuelReceiptTankLines).values({
-            id: line.id,
-            fuelReceiptId: receiptData.id,
-            tankId: line.tankId,
-            productId: line.productId,
-            invoiceQuantityMilliunits: line.invoiceQuantityMilliunits,
-            densityMilliunits: line.densityMilliunits || null,
-            temperatureMilliunits: line.temperatureMilliunits || null,
-            invoiceDensityMilliunits: line.invoiceDensityMilliunits || null,
-            densityVarianceMilliunits: line.densityVarianceMilliunits || null,
-            qualityStatus: line.qualityStatus,
-            appliedToleranceSettingId: line.appliedToleranceSettingId || null,
-            appliedDensityToleranceMilliunits: line.appliedDensityToleranceMilliunits || null,
-            createdAt: line.createdAt,
-            updatedAt: line.updatedAt,
-          });
-        }
-      });
+      await (this.db as any).batch([headerInsert, ...lineInserts]);
     } catch (err: any) {
-      const msg = err?.message || '';
-      const isShiftClosed = msg.includes('SHIFT_CLOSED');
-      return { success: false, receipt: null, shiftClosed: isShiftClosed, error: isShiftClosed ? 'SHIFT_CLOSED' : (err?.message || 'TRANSACTION_FAILED') };
+      try {
+        await this.db.delete(schema.fuelReceiptTankLines).where(eq(schema.fuelReceiptTankLines.fuelReceiptId, receiptData.id));
+        await this.db.delete(schema.fuelReceipts).where(eq(schema.fuelReceipts.id, receiptData.id));
+      } catch (cleanupErr) {}
+
+      return { success: false, receipt: null, shiftClosed: true, error: 'SHIFT_CLOSED' };
     }
 
     const created = await this.findFuelReceiptById(receiptData.id);
