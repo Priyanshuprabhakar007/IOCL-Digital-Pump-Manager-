@@ -829,8 +829,110 @@ export class PumpRepository {
     };
   }
 
-  async closeOperationalShiftConditional(shiftId: string, closedByUserId: string): Promise<{ success: boolean; shift: OperationalShift | null; alreadyClosed: boolean; error?: string; message?: string }> {
-    // 1. Check if shift exists
+  async validateShiftCompleteness(shiftId: string): Promise<{
+    valid: boolean;
+    error?: string;
+    message?: string;
+    details?: Record<string, unknown>;
+  }> {
+    const existing = await this.findOperationalShiftById(shiftId);
+    if (!existing) {
+      return { valid: false, error: 'NOT_FOUND', message: 'Shift not found' };
+    }
+
+    // 1. Check all participating liquid tanks in shift snapshot
+    const tankSnapshots = await this.listShiftTankSnapshots(shiftId);
+    const tankReadings = await this.listShiftTankReadings(shiftId);
+
+    if (tankSnapshots.length > 0) {
+      for (const ts of tankSnapshots) {
+        const hasOpening = tankReadings.some(r => r.tankId === ts.tankId && r.readingType === 'OPENING');
+        const hasClosing = tankReadings.some(r => r.tankId === ts.tankId && r.readingType === 'CLOSING');
+
+        if (!hasOpening || !hasClosing) {
+          const missingReadingTypes: ('OPENING' | 'CLOSING')[] = [];
+          if (!hasOpening) missingReadingTypes.push('OPENING');
+          if (!hasClosing) missingReadingTypes.push('CLOSING');
+
+          return {
+            valid: false,
+            error: 'INCOMPLETE_TANK_STOCK_DATA',
+            message: `Tank #${ts.tankNumber} (${ts.tankName}) is missing ${missingReadingTypes.join(' and ')} stock reading(s).`,
+            details: {
+              tankId: ts.tankId,
+              tankNumber: ts.tankNumber,
+              missingReadingTypes,
+            },
+          };
+        }
+      }
+    }
+
+    // 2. Check all fuel receipts for this shift are terminal (COMPLETED or CANCELLED)
+    const receipts = await this.listFuelReceiptsByShift(shiftId);
+    for (const rcpt of receipts) {
+      if (rcpt.status !== 'COMPLETED' && rcpt.status !== 'CANCELLED') {
+        return {
+          valid: false,
+          error: 'INCOMPLETE_RECEIPTS',
+          message: `Fuel receipt (TT: ${rcpt.ttNumber}, Inv: ${rcpt.invoiceNumber}) is in ${rcpt.status} status. Complete or cancel all fuel receipts before closing the shift.`,
+        };
+      }
+
+      if (rcpt.status === 'COMPLETED' && rcpt.lines) {
+        for (const line of rcpt.lines) {
+          if (!line.preDecantReadingId || !line.postDecantReadingId) {
+            return {
+              valid: false,
+              error: 'INCOMPLETE_DECANTATION_DATA',
+              message: `Completed fuel receipt line for tank #${line.tankNumber || line.tankId} is missing PRE or POST decantation reading.`,
+            };
+          }
+
+          const pre = tankReadings.find(r => r.id === line.preDecantReadingId);
+          const post = tankReadings.find(r => r.id === line.postDecantReadingId);
+
+          if (!pre || pre.readingType !== 'PRE_RECEIPT' || pre.operationalShiftId !== shiftId || pre.tankId !== line.tankId || pre.productId !== line.productId) {
+            return {
+              valid: false,
+              error: 'INVALID_DECANTATION_READING',
+              message: `PRE reading linked to receipt line is invalid or from a different shift/tank/product.`,
+            };
+          }
+
+          if (!post || post.readingType !== 'POST_RECEIPT' || post.operationalShiftId !== shiftId || post.tankId !== line.tankId || post.productId !== line.productId) {
+            return {
+              valid: false,
+              error: 'INVALID_DECANTATION_READING',
+              message: `POST reading linked to receipt line is invalid or from a different shift/tank/product.`,
+            };
+          }
+
+          if (post.recordedAt <= pre.recordedAt) {
+            return {
+              valid: false,
+              error: 'INVALID_DECANTATION_TIMESTAMPS',
+              message: `POST decantation reading timestamp must be strictly after PRE reading timestamp.`,
+            };
+          }
+
+          const measured = post.netProductVolumeMilliunits - pre.netProductVolumeMilliunits;
+          if (measured < 0) {
+            return {
+              valid: false,
+              error: 'INVALID_DECANTATION_VOLUME',
+              message: `Measured received volume (${measured / 1000} L) cannot be negative.`,
+            };
+          }
+        }
+      }
+    }
+
+    return { valid: true };
+  }
+
+  async closeOperationalShiftConditional(shiftId: string, closedByUserId: string): Promise<{ success: boolean; shift: OperationalShift | null; alreadyClosed: boolean; error?: string; message?: string; details?: Record<string, unknown> }> {
+    // 1. Check if shift exists and status
     const existing = await this.findOperationalShiftById(shiftId);
     if (!existing) {
       return { success: false, shift: null, alreadyClosed: false, error: 'NOT_FOUND', message: 'Shift not found' };
@@ -839,63 +941,44 @@ export class PumpRepository {
       return { success: false, shift: existing, alreadyClosed: true, error: 'SHIFT_CLOSED', message: 'Shift is already closed' };
     }
 
-    // 2. Validate all participating shift snapshot tanks have OPENING and CLOSING readings if tank readings are being recorded
-    const tankSnapshots = await this.listShiftTankSnapshots(shiftId);
-    const tankReadings = await this.listShiftTankReadings(shiftId);
-
-    if (tankReadings.length > 0) {
-      for (const ts of tankSnapshots) {
-        const hasOpening = tankReadings.some(r => r.tankId === ts.tankId && r.readingType === 'OPENING');
-        const hasClosing = tankReadings.some(r => r.tankId === ts.tankId && r.readingType === 'CLOSING');
-        if (!hasOpening || !hasClosing) {
-          const missing: string[] = [];
-          if (!hasOpening) missing.push('OPENING');
-          if (!hasClosing) missing.push('CLOSING');
-          return {
-            success: false,
-            shift: existing,
-            alreadyClosed: false,
-            error: 'INCOMPLETE_TANK_STOCK_DATA',
-            message: `Cannot close shift: Tank #${ts.tankNumber} (${ts.tankName}) is missing ${missing.join(' and ')} stock reading(s).`,
-          };
-        }
-      }
+    // 2. Centralized shift completeness validation
+    const check = await this.validateShiftCompleteness(shiftId);
+    if (!check.valid) {
+      return {
+        success: false,
+        shift: existing,
+        alreadyClosed: false,
+        error: check.error,
+        message: check.message,
+        details: check.details,
+      };
     }
 
-    // 3. Validate all fuel receipts for this shift are in a terminal state (COMPLETED or CANCELLED)
-    const receipts = await this.listFuelReceiptsByShift(shiftId);
-    for (const rcpt of receipts) {
-      if (rcpt.status !== 'COMPLETED' && rcpt.status !== 'CANCELLED') {
-        return {
-          success: false,
-          shift: existing,
-          alreadyClosed: false,
-          error: 'INCOMPLETE_RECEIPTS',
-          message: `Cannot close shift: Fuel receipt (TT: ${rcpt.ttNumber}, Inv: ${rcpt.invoiceNumber}) is currently in ${rcpt.status} status. Complete or cancel all tanker receipts before closing the shift.`,
-        };
-      }
-    }
-
-    // 4. Calculate and persist authoritative stock reconciliation
-    if (tankSnapshots.length > 0 && tankReadings.length > 0) {
+    // 3. Calculate and save stock reconciliation before status change
+    try {
       await this.calculateAndSaveShiftStockReconciliation(shiftId);
+    } catch (err: any) {
+      return {
+        success: false,
+        shift: existing,
+        alreadyClosed: false,
+        error: err?.code || 'RECONCILIATION_FAILED',
+        message: err?.message || 'Failed to compute stock reconciliation',
+      };
     }
 
+    // 4. Atomic conditional transition OPEN -> CLOSED
     const nowIso = new Date().toISOString();
-    // Conditional update: only updates if status is currently OPEN
-    const updatedRows = await this.db.all<{ id: string; status: string }>(
+    const transitionToClosed = await this.db.all<{ id: string; status: string }>(
       sql`UPDATE operational_shifts 
           SET status = 'CLOSED', closed_at = ${nowIso}, closed_by_user_id = ${closedByUserId}, updated_at = ${nowIso} 
           WHERE id = ${shiftId} AND status = 'OPEN' 
           RETURNING id, status`
     );
 
-    if (!updatedRows || updatedRows.length === 0) {
+    if (!transitionToClosed || transitionToClosed.length === 0) {
       const latest = await this.findOperationalShiftById(shiftId);
-      if (latest && (latest.status === 'CLOSED' || latest.status === 'LOCKED')) {
-        return { success: false, shift: latest, alreadyClosed: true, error: 'SHIFT_CLOSED', message: 'Shift is already closed' };
-      }
-      return { success: false, shift: latest, alreadyClosed: false };
+      return { success: false, shift: latest, alreadyClosed: true, error: 'SHIFT_CLOSED', message: 'Shift is already closed' };
     }
 
     const shift = await this.findOperationalShiftById(shiftId);
@@ -1692,6 +1775,32 @@ export class PumpRepository {
     return { success: true, reading };
   }
 
+  async createTankReading(data: {
+    id: string;
+    operationalShiftId: string;
+    outletId: string;
+    tankId: string;
+    productId: string;
+    readingType: TankReadingType;
+    source: TankReadingSource;
+    productDipMmMilliunits: number;
+    waterDipMmMilliunits: number;
+    grossObservedVolumeMilliunits: number;
+    waterVolumeMilliunits: number;
+    netProductVolumeMilliunits: number;
+    recordedAt: string;
+    recordedByUserId: string;
+    notes?: string | null;
+    createdAt: string;
+    updatedAt: string;
+  }): Promise<TankStockReading> {
+    const res = await this.createTankReadingConditional(data);
+    if (!res.success || !res.reading) {
+      throw new Error(res.error || 'Failed to create tank reading');
+    }
+    return res.reading;
+  }
+
   // ==========================================
   // PHASE 2B: FUEL RECEIPTS & TANK LINES
   // ==========================================
@@ -1823,33 +1932,35 @@ export class PumpRepository {
       invoiceDensityMilliunits?: number | null;
       densityVarianceMilliunits?: number | null;
       qualityStatus: QualityStatus;
+      appliedToleranceSettingId?: string | null;
+      appliedDensityToleranceMilliunits?: number | null;
       createdAt: string;
       updatedAt: string;
     }>
   ): Promise<{ success: boolean; receipt: FuelReceipt | null; shiftClosed?: boolean; error?: string }> {
-    const insertedRows = await this.db.all<{ id: string }>(
-      sql`INSERT INTO fuel_receipts (
-            id, outlet_id, operational_shift_id, tt_number, invoice_number, invoice_date,
-            arrival_at, seal_verified, seal_exception_reason, status, recorded_by_user_id,
-            created_at, updated_at
-          )
-          SELECT
-            ${receiptData.id}, ${receiptData.outletId}, ${receiptData.operationalShiftId},
-            ${receiptData.ttNumber}, ${receiptData.invoiceNumber}, ${receiptData.invoiceDate},
-            ${receiptData.arrivalAt}, ${receiptData.sealVerified ? 1 : 0}, ${receiptData.sealExceptionReason || null},
-            'ARRIVED', ${receiptData.recordedByUserId}, ${receiptData.createdAt}, ${receiptData.updatedAt}
-          WHERE EXISTS (
-            SELECT 1 FROM operational_shifts WHERE id = ${receiptData.operationalShiftId} AND status = 'OPEN'
-          )
-          RETURNING id`
-    );
-
-    if (!insertedRows || insertedRows.length === 0) {
+    const shift = await this.findOperationalShiftById(receiptData.operationalShiftId);
+    if (!shift || shift.status !== 'OPEN') {
       return { success: false, receipt: null, shiftClosed: true, error: 'SHIFT_CLOSED' };
     }
 
-    for (const line of linesData) {
-      await this.db.insert(schema.fuelReceiptTankLines).values({
+    const receiptInsert = this.db.insert(schema.fuelReceipts).values({
+      id: receiptData.id,
+      outletId: receiptData.outletId,
+      operationalShiftId: receiptData.operationalShiftId,
+      ttNumber: receiptData.ttNumber,
+      invoiceNumber: receiptData.invoiceNumber,
+      invoiceDate: receiptData.invoiceDate,
+      arrivalAt: receiptData.arrivalAt,
+      sealVerified: receiptData.sealVerified,
+      sealExceptionReason: receiptData.sealExceptionReason || null,
+      status: 'ARRIVED',
+      recordedByUserId: receiptData.recordedByUserId,
+      createdAt: receiptData.createdAt,
+      updatedAt: receiptData.updatedAt,
+    });
+
+    const lineInserts = linesData.map(line =>
+      this.db.insert(schema.fuelReceiptTankLines).values({
         id: line.id,
         fuelReceiptId: receiptData.id,
         tankId: line.tankId,
@@ -1860,10 +1971,14 @@ export class PumpRepository {
         invoiceDensityMilliunits: line.invoiceDensityMilliunits || null,
         densityVarianceMilliunits: line.densityVarianceMilliunits || null,
         qualityStatus: line.qualityStatus,
+        appliedToleranceSettingId: line.appliedToleranceSettingId || null,
+        appliedDensityToleranceMilliunits: line.appliedDensityToleranceMilliunits || null,
         createdAt: line.createdAt,
         updatedAt: line.updatedAt,
-      });
-    }
+      })
+    );
+
+    await (this.db as any).batch([receiptInsert, ...lineInserts]);
 
     const created = await this.findFuelReceiptById(receiptData.id);
     return { success: true, receipt: created };
@@ -1916,14 +2031,16 @@ export class PumpRepository {
       invoiceDensityMilliunits: number | null;
       densityVarianceMilliunits: number | null;
       qualityStatus: QualityStatus;
+      appliedToleranceSettingId: string | null;
+      appliedDensityToleranceMilliunits: number | null;
       updatedAt: string;
     }>
   ): Promise<{ success: boolean; line: FuelReceiptTankLine | null; shiftClosed?: boolean; error?: string }> {
     const nowIso = new Date().toISOString();
     const updatedRows = await this.db.all<{ id: string }>(
       sql`UPDATE fuel_receipt_tank_lines
-          SET pre_decant_reading_id = COALESCE(${data.preDecantReadingId || null}, pre_decant_reading_id),
-              post_decant_reading_id = COALESCE(${data.postDecantReadingId || null}, post_decant_reading_id),
+          SET pre_decant_reading_id = COALESCE(${data.preDecantReadingId !== undefined ? data.preDecantReadingId : null}, pre_decant_reading_id),
+              post_decant_reading_id = COALESCE(${data.postDecantReadingId !== undefined ? data.postDecantReadingId : null}, post_decant_reading_id),
               measured_received_quantity_milliunits = COALESCE(${data.measuredReceivedQuantityMilliunits != null ? data.measuredReceivedQuantityMilliunits : null}, measured_received_quantity_milliunits),
               receipt_variance_milliunits = COALESCE(${data.receiptVarianceMilliunits != null ? data.receiptVarianceMilliunits : null}, receipt_variance_milliunits),
               density_milliunits = COALESCE(${data.densityMilliunits != null ? data.densityMilliunits : null}, density_milliunits),
@@ -1931,6 +2048,8 @@ export class PumpRepository {
               invoice_density_milliunits = COALESCE(${data.invoiceDensityMilliunits != null ? data.invoiceDensityMilliunits : null}, invoice_density_milliunits),
               density_variance_milliunits = COALESCE(${data.densityVarianceMilliunits != null ? data.densityVarianceMilliunits : null}, density_variance_milliunits),
               quality_status = COALESCE(${data.qualityStatus || null}, quality_status),
+              applied_tolerance_setting_id = COALESCE(${data.appliedToleranceSettingId || null}, applied_tolerance_setting_id),
+              applied_density_tolerance_milliunits = COALESCE(${data.appliedDensityToleranceMilliunits != null ? data.appliedDensityToleranceMilliunits : null}, applied_density_tolerance_milliunits),
               updated_at = ${nowIso}
           WHERE id = ${lineId}
             AND EXISTS (
@@ -1954,14 +2073,27 @@ export class PumpRepository {
   // ==========================================
 
   async listQualityTolerances(scopeType?: QualityScopeType, scopeEntityId?: string | null): Promise<QualityToleranceSetting[]> {
-    const rows = await this.db
+    const conditions: any[] = [];
+    if (scopeType) {
+      conditions.push(eq(schema.qualityToleranceSettings.scopeType, scopeType));
+    }
+    if (scopeEntityId !== undefined && scopeEntityId !== null) {
+      conditions.push(eq(schema.qualityToleranceSettings.scopeEntityId, scopeEntityId));
+    }
+
+    let query = this.db
       .select({
         tolerance: schema.qualityToleranceSettings,
         product: schema.products,
       })
       .from(schema.qualityToleranceSettings)
-      .leftJoin(schema.products, eq(schema.qualityToleranceSettings.productId, schema.products.id))
-      .orderBy(desc(schema.qualityToleranceSettings.createdAt));
+      .leftJoin(schema.products, eq(schema.qualityToleranceSettings.productId, schema.products.id));
+
+    if (conditions.length > 0) {
+      query = (query as any).where(and(...conditions));
+    }
+
+    const rows = await query.orderBy(desc(schema.qualityToleranceSettings.createdAt));
 
     return rows.map(r => ({
       ...r.tolerance,
@@ -2040,15 +2172,26 @@ export class PumpRepository {
     const meterReadings = await this.listReadingsForShift(shiftId);
     const receipts = await this.listFuelReceiptsByShift(shiftId);
 
+    for (const ts of tankSnapshots) {
+      const hasOpening = tankReadings.some(r => r.tankId === ts.tankId && r.readingType === 'OPENING');
+      const hasClosing = tankReadings.some(r => r.tankId === ts.tankId && r.readingType === 'CLOSING');
+      if (!hasOpening || !hasClosing) {
+        const err = new Error(`Cannot calculate stock reconciliation: Tank #${ts.tankNumber} (${ts.tankName}) missing OPENING or CLOSING reading.`) as any;
+        err.code = 'INCOMPLETE_TANK_STOCK_DATA';
+        throw err;
+      }
+    }
+
     const nowIso = new Date().toISOString();
     const reconResults: ShiftStockReconciliation[] = [];
 
     for (const ts of tankSnapshots) {
-      // 1. Physical Opening Stock
-      const openingReading = tankReadings.find(r => r.tankId === ts.tankId && r.readingType === 'OPENING');
-      const openingStockMilli = openingReading ? openingReading.netProductVolumeMilliunits : 0;
+      const openingReading = tankReadings.find(r => r.tankId === ts.tankId && r.readingType === 'OPENING')!;
+      const closingReading = tankReadings.find(r => r.tankId === ts.tankId && r.readingType === 'CLOSING')!;
 
-      // 2. Measured Received Quantity from completed receipts
+      const openingStockMilli = openingReading.netProductVolumeMilliunits;
+      const physicalClosingMilli = closingReading.netProductVolumeMilliunits;
+
       let receiptMilli = 0;
       for (const rcpt of receipts) {
         if (rcpt.status === 'COMPLETED' && rcpt.lines) {
@@ -2060,7 +2203,6 @@ export class PumpRepository {
         }
       }
 
-      // 3. Sales quantity aggregated from nozzles assigned to this tank in the snapshot
       let salesMilli = 0;
       const nozzlesForTank = nozzleSnapshots.filter(n => n.tankId === ts.tankId);
       for (const n of nozzlesForTank) {
@@ -2070,14 +2212,7 @@ export class PumpRepository {
         }
       }
 
-      // 4. Theoretical Closing Stock = Opening + Receipts - Sales
       const theoreticalClosingMilli = openingStockMilli + receiptMilli - salesMilli;
-
-      // 5. Physical Closing Stock
-      const closingReading = tankReadings.find(r => r.tankId === ts.tankId && r.readingType === 'CLOSING');
-      const physicalClosingMilli = closingReading ? closingReading.netProductVolumeMilliunits : theoreticalClosingMilli;
-
-      // 6. Variance = Physical - Theoretical
       const varianceMilli = physicalClosingMilli - theoreticalClosingMilli;
       let varianceStatus: VarianceStatus = 'BALANCED';
       if (varianceMilli > 0) varianceStatus = 'GAIN';
@@ -2152,7 +2287,12 @@ export class PumpRepository {
     const byTank = tankSnapshots.map(ts => {
       const openingReading = tankReadings.find(r => r.tankId === ts.tankId && r.readingType === 'OPENING');
       const closingReading = tankReadings.find(r => r.tankId === ts.tankId && r.readingType === 'CLOSING');
-      const openingStockMilli = openingReading ? openingReading.netProductVolumeMilliunits : 0;
+
+      const hasOpeningReading = Boolean(openingReading);
+      const hasClosingReading = Boolean(closingReading);
+
+      const openingStockMilli = openingReading ? openingReading.netProductVolumeMilliunits : null;
+      const physicalClosingMilli = closingReading ? closingReading.netProductVolumeMilliunits : null;
 
       let receiptMilli = 0;
       let rcptCount = 0;
@@ -2176,12 +2316,19 @@ export class PumpRepository {
         }
       }
 
-      const theoreticalClosingMilli = openingStockMilli + receiptMilli - salesMilli;
-      const physicalClosingMilli = closingReading ? closingReading.netProductVolumeMilliunits : theoreticalClosingMilli;
-      const varianceMilli = physicalClosingMilli - theoreticalClosingMilli;
-      let varianceStatus: VarianceStatus = 'BALANCED';
-      if (varianceMilli > 0) varianceStatus = 'GAIN';
-      else if (varianceMilli < 0) varianceStatus = 'LOSS';
+      let theoreticalClosingMilli: number | null = null;
+      if (openingStockMilli != null) {
+        theoreticalClosingMilli = openingStockMilli + receiptMilli - salesMilli;
+      }
+
+      let varianceMilli: number | null = null;
+      let varianceStatus: VarianceStatus | null = null;
+      if (physicalClosingMilli != null && theoreticalClosingMilli != null) {
+        varianceMilli = physicalClosingMilli - theoreticalClosingMilli;
+        if (varianceMilli > 0) varianceStatus = 'GAIN';
+        else if (varianceMilli < 0) varianceStatus = 'LOSS';
+        else varianceStatus = 'BALANCED';
+      }
 
       return {
         tankId: ts.tankId,
@@ -2191,31 +2338,30 @@ export class PumpRepository {
         productCode: ts.productCode,
         productName: ts.productName,
         productUnit: ts.productUnit,
-        openingStockStr: formatMilliunits(openingStockMilli),
+        openingStockStr: openingStockMilli != null ? formatMilliunits(openingStockMilli) : null,
         receiptQuantityStr: formatMilliunits(receiptMilli),
         salesQuantityStr: formatMilliunits(salesMilli),
-        theoreticalClosingStockStr: formatMilliunits(theoreticalClosingMilli),
-        physicalClosingStockStr: formatMilliunits(physicalClosingMilli),
-        varianceStr: formatMilliunits(varianceMilli),
+        theoreticalClosingStockStr: theoreticalClosingMilli != null ? formatMilliunits(theoreticalClosingMilli) : null,
+        physicalClosingStockStr: physicalClosingMilli != null ? formatMilliunits(physicalClosingMilli) : null,
+        varianceStr: varianceMilli != null ? formatMilliunits(varianceMilli) : null,
         varianceStatus,
-        hasOpeningReading: Boolean(openingReading),
-        hasClosingReading: Boolean(closingReading),
+        hasOpeningReading,
+        hasClosingReading,
         receiptsCount: rcptCount,
       };
     });
 
-    // Group by product (same physical unit only)
     const productMap = new Map<string, {
       productId: string;
       productCode: string;
       productName: string;
       productUnit: ProductUnit;
-      openingMilli: number;
+      openingMilli: number | null;
       receiptMilli: number;
       salesMilli: number;
-      theoreticalMilli: number;
-      physicalMilli: number;
-      varianceMilli: number;
+      theoreticalMilli: number | null;
+      physicalMilli: number | null;
+      varianceMilli: number | null;
     }>();
 
     for (const item of byTank) {
@@ -2226,39 +2372,59 @@ export class PumpRepository {
           productCode: item.productCode,
           productName: item.productName,
           productUnit: item.productUnit,
-          openingMilli: 0,
-          receiptMilli: 0,
-          salesMilli: 0,
-          theoreticalMilli: 0,
-          physicalMilli: 0,
-          varianceMilli: 0,
+          openingMilli: item.openingStockStr != null ? parseMilliunits(item.openingStockStr) : null,
+          receiptMilli: parseMilliunits(item.receiptQuantityStr),
+          salesMilli: parseMilliunits(item.salesQuantityStr),
+          theoreticalMilli: item.theoreticalClosingStockStr != null ? parseMilliunits(item.theoreticalClosingStockStr) : null,
+          physicalMilli: item.physicalClosingStockStr != null ? parseMilliunits(item.physicalClosingStockStr) : null,
+          varianceMilli: item.varianceStr != null ? parseMilliunits(item.varianceStr) : null,
         };
         productMap.set(item.productId, p);
+      } else {
+        if (item.openingStockStr != null && p.openingMilli != null) {
+          p.openingMilli += parseMilliunits(item.openingStockStr);
+        } else {
+          p.openingMilli = null;
+        }
+        p.receiptMilli += parseMilliunits(item.receiptQuantityStr);
+        p.salesMilli += parseMilliunits(item.salesQuantityStr);
+        if (item.theoreticalClosingStockStr != null && p.theoreticalMilli != null) {
+          p.theoreticalMilli += parseMilliunits(item.theoreticalClosingStockStr);
+        } else {
+          p.theoreticalMilli = null;
+        }
+        if (item.physicalClosingStockStr != null && p.physicalMilli != null) {
+          p.physicalMilli += parseMilliunits(item.physicalClosingStockStr);
+        } else {
+          p.physicalMilli = null;
+        }
+        if (item.varianceStr != null && p.varianceMilli != null) {
+          p.varianceMilli += parseMilliunits(item.varianceStr);
+        } else {
+          p.varianceMilli = null;
+        }
       }
-      p.openingMilli += parseMilliunits(item.openingStockStr);
-      p.receiptMilli += parseMilliunits(item.receiptQuantityStr);
-      p.salesMilli += parseMilliunits(item.salesQuantityStr);
-      p.theoreticalMilli += parseMilliunits(item.theoreticalClosingStockStr);
-      p.physicalMilli += parseMilliunits(item.physicalClosingStockStr);
-      p.varianceMilli += parseMilliunits(item.varianceStr);
     }
 
     const byProduct = Array.from(productMap.values()).map(p => {
-      let varianceStatus: VarianceStatus = 'BALANCED';
-      if (p.varianceMilli > 0) varianceStatus = 'GAIN';
-      else if (p.varianceMilli < 0) varianceStatus = 'LOSS';
+      let varianceStatus: VarianceStatus | null = null;
+      if (p.varianceMilli != null) {
+        if (p.varianceMilli > 0) varianceStatus = 'GAIN';
+        else if (p.varianceMilli < 0) varianceStatus = 'LOSS';
+        else varianceStatus = 'BALANCED';
+      }
 
       return {
         productId: p.productId,
         productCode: p.productCode,
         productName: p.productName,
         productUnit: p.productUnit,
-        openingStockStr: formatMilliunits(p.openingMilli),
+        openingStockStr: p.openingMilli != null ? formatMilliunits(p.openingMilli) : null,
         receiptQuantityStr: formatMilliunits(p.receiptMilli),
         salesQuantityStr: formatMilliunits(p.salesMilli),
-        theoreticalClosingStockStr: formatMilliunits(p.theoreticalMilli),
-        physicalClosingStockStr: formatMilliunits(p.physicalMilli),
-        varianceStr: formatMilliunits(p.varianceMilli),
+        theoreticalClosingStockStr: p.theoreticalMilli != null ? formatMilliunits(p.theoreticalMilli) : null,
+        physicalClosingStockStr: p.physicalMilli != null ? formatMilliunits(p.physicalMilli) : null,
+        varianceStr: p.varianceMilli != null ? formatMilliunits(p.varianceMilli) : null,
         varianceStatus,
       };
     });

@@ -242,33 +242,122 @@ fuelReceipts.patch('/fuel-receipts/:id/status', requirePermission(PERMISSIONS.FU
 
   const { status, decantationStartedAt, decantationCompletedAt, sealVerified, sealExceptionReason } = parseResult.data;
 
-  // Validation before completing: all lines must have measured received quantity
-  if (status === 'COMPLETED') {
-    if (receipt.lines) {
-      for (const line of receipt.lines) {
-        if (line.measuredReceivedQuantityMilliunits == null) {
-          return c.json({
-            success: false,
-            data: null,
-            error: {
-              code: 'INCOMPLETE_LINE_DECANTATION',
-              message: `Cannot complete fuel receipt: Tank #${line.tankNumber} line is missing decantation dip measurements.`,
-            },
-          }, 400);
-        }
-      }
-    }
+  // Validation before status update: check state machine transitions
+  if (receipt.status === 'COMPLETED' || receipt.status === 'CANCELLED') {
+    return c.json({
+      success: false,
+      data: null,
+      error: { code: 'RECEIPT_FINALIZED', message: `Fuel receipt is ${receipt.status} and cannot be modified.` },
+    }, 409);
+  }
+
+  const allowedTransitions: Record<string, string[]> = {
+    ARRIVED: ['VERIFIED', 'DECANTED', 'COMPLETED', 'CANCELLED'],
+    VERIFIED: ['DECANTED', 'COMPLETED', 'CANCELLED'],
+    DECANTED: ['COMPLETED', 'CANCELLED'],
+  };
+
+  if (status && !allowedTransitions[receipt.status]?.includes(status)) {
+    return c.json({
+      success: false,
+      data: null,
+      error: { code: 'INVALID_STATUS_TRANSITION', message: `Cannot transition fuel receipt status from ${receipt.status} to ${status}` },
+    }, 400);
   }
 
   const nowIso = new Date().toISOString();
-  let decStart = decantationStartedAt;
-  let decComp = decantationCompletedAt;
+  let decStart = decantationStartedAt || receipt.decantationStartedAt;
+  let decComp = decantationCompletedAt || receipt.decantationCompletedAt;
 
   if (status === 'DECANTED' && !decStart) {
-    decStart = receipt.decantationStartedAt || nowIso;
+    decStart = nowIso;
   }
-  if (status === 'COMPLETED' && !decComp) {
-    decComp = receipt.decantationCompletedAt || nowIso;
+  if (status === 'COMPLETED') {
+    if (!decComp) decComp = nowIso;
+    if (decStart && decComp && decComp < decStart) {
+      return c.json({
+        success: false,
+        data: null,
+        error: { code: 'INVALID_DECANTATION_TIMESTAMPS', message: 'decantationCompletedAt must be on or after decantationStartedAt' },
+      }, 400);
+    }
+
+    // Recheck all lines server-side before COMPLETION
+    if (!receipt.lines || receipt.lines.length === 0) {
+      return c.json({
+        success: false,
+        data: null,
+        error: { code: 'INCOMPLETE_LINE_DECANTATION', message: 'Cannot complete fuel receipt without tanker lines.' },
+      }, 400);
+    }
+
+    for (const line of receipt.lines) {
+      if (!line.preDecantReadingId || !line.postDecantReadingId) {
+        return c.json({
+          success: false,
+          data: null,
+          error: {
+            code: 'INCOMPLETE_LINE_DECANTATION',
+            message: `Cannot complete fuel receipt: Line for Tank #${line.tankNumber} is missing PRE or POST decantation reading.`,
+          },
+        }, 400);
+      }
+
+      const pre = await pumpRepo.findTankReadingById(line.preDecantReadingId);
+      const post = await pumpRepo.findTankReadingById(line.postDecantReadingId);
+
+      if (!pre || pre.readingType !== 'PRE_RECEIPT' || pre.operationalShiftId !== receipt.operationalShiftId || pre.tankId !== line.tankId || pre.productId !== line.productId) {
+        return c.json({
+          success: false,
+          data: null,
+          error: { code: 'INVALID_DECANTATION_READING', message: `PRE reading linked to line for Tank #${line.tankNumber} is invalid or mismatched.` },
+        }, 400);
+      }
+
+      if (!post || post.readingType !== 'POST_RECEIPT' || post.operationalShiftId !== receipt.operationalShiftId || post.tankId !== line.tankId || post.productId !== line.productId) {
+        return c.json({
+          success: false,
+          data: null,
+          error: { code: 'INVALID_DECANTATION_READING', message: `POST reading linked to line for Tank #${line.tankNumber} is invalid or mismatched.` },
+        }, 400);
+      }
+
+      if (post.recordedAt <= pre.recordedAt) {
+        return c.json({
+          success: false,
+          data: null,
+          error: { code: 'INVALID_DECANTATION_TIMESTAMPS', message: `POST reading timestamp must be strictly after PRE reading timestamp.` },
+        }, 400);
+      }
+
+      const measured = post.netProductVolumeMilliunits - pre.netProductVolumeMilliunits;
+      if (measured < 0) {
+        return c.json({
+          success: false,
+          data: null,
+          error: { code: 'INVALID_DECANTATION_VOLUME', message: `Measured received quantity cannot be negative.` },
+        }, 400);
+      }
+
+      // Evaluate density quality at receipt event date
+      const qRes = await QualityToleranceService.evaluateDensityQuality(
+        db,
+        receipt.outletId,
+        line.productId,
+        line.densityMilliunits,
+        line.invoiceDensityMilliunits,
+        receipt.invoiceDate || receipt.arrivalAt
+      );
+
+      await pumpRepo.updateFuelReceiptLineConditional(line.id, receipt.operationalShiftId, {
+        measuredReceivedQuantityMilliunits: measured,
+        receiptVarianceMilliunits: measured - line.invoiceQuantityMilliunits,
+        qualityStatus: qRes.qualityStatus,
+        appliedToleranceSettingId: qRes.appliedToleranceSettingId,
+        appliedDensityToleranceMilliunits: qRes.appliedToleranceMilliunits,
+        updatedAt: nowIso,
+      });
+    }
   }
 
   const res = await pumpRepo.updateFuelReceiptStatusConditional(id, receipt.operationalShiftId, {
@@ -345,6 +434,14 @@ fuelReceipts.patch('/fuel-receipt-lines/:lineId', requirePermission(PERMISSIONS.
     return c.json({ success: false, data: null, error: { code: 'FORBIDDEN', message: 'No authority over this receipt outlet' } }, 403);
   }
 
+  if (receipt.status === 'COMPLETED' || receipt.status === 'CANCELLED') {
+    return c.json({
+      success: false,
+      data: null,
+      error: { code: 'RECEIPT_FINALIZED', message: `Fuel receipt is ${receipt.status} and cannot be modified.` },
+    }, 409);
+  }
+
   const { preDecantReadingId, postDecantReadingId, density, temperature, invoiceDensity } = parseResult.data;
 
   let measuredReceivedMilli: number | null = existingLine.measuredReceivedQuantityMilliunits;
@@ -353,22 +450,86 @@ fuelReceipts.patch('/fuel-receipt-lines/:lineId', requirePermission(PERMISSIONS.
   const targetPreId = preDecantReadingId !== undefined ? preDecantReadingId : existingLine.preDecantReadingId;
   const targetPostId = postDecantReadingId !== undefined ? postDecantReadingId : existingLine.postDecantReadingId;
 
-  if (targetPreId && targetPostId) {
+  const { eq: eqOp, ne: neOp, and: andOp } = require('drizzle-orm');
+
+  if (targetPreId) {
     const preReading = await pumpRepo.findTankReadingById(targetPreId);
-    const postReading = await pumpRepo.findTankReadingById(targetPostId);
-
-    if (preReading && postReading) {
-      if (preReading.tankId !== existingLine.tankId || postReading.tankId !== existingLine.tankId) {
-        return c.json({
-          success: false,
-          data: null,
-          error: { code: 'INVALID_READING_TANK', message: 'Linked readings must belong to the same receiving tank' },
-        }, 400);
-      }
-
-      measuredReceivedMilli = postReading.netProductVolumeMilliunits - preReading.netProductVolumeMilliunits;
-      receiptVarianceMilli = measuredReceivedMilli - existingLine.invoiceQuantityMilliunits;
+    if (!preReading || preReading.readingType !== 'PRE_RECEIPT' || preReading.operationalShiftId !== receipt.operationalShiftId || preReading.tankId !== existingLine.tankId || preReading.productId !== existingLine.productId) {
+      return c.json({
+        success: false,
+        data: null,
+        error: { code: 'INVALID_DECANTATION_READING', message: 'PRE reading must be a PRE_RECEIPT reading for the same shift, tank, and product.' },
+      }, 400);
     }
+
+    const [existingUsage] = await db
+      .select()
+      .from(require('../../db/schema').fuelReceiptTankLines)
+      .where(
+        andOp(
+          eqOp(require('../../db/schema').fuelReceiptTankLines.preDecantReadingId, targetPreId),
+          neOp(require('../../db/schema').fuelReceiptTankLines.id, lineId)
+        )
+      );
+    if (existingUsage) {
+      return c.json({
+        success: false,
+        data: null,
+        error: { code: 'RECEIPT_READING_ALREADY_LINKED', message: 'PRE_RECEIPT reading is already linked to another receipt line.' },
+      }, 409);
+    }
+  }
+
+  if (targetPostId) {
+    const postReading = await pumpRepo.findTankReadingById(targetPostId);
+    if (!postReading || postReading.readingType !== 'POST_RECEIPT' || postReading.operationalShiftId !== receipt.operationalShiftId || postReading.tankId !== existingLine.tankId || postReading.productId !== existingLine.productId) {
+      return c.json({
+        success: false,
+        data: null,
+        error: { code: 'INVALID_DECANTATION_READING', message: 'POST reading must be a POST_RECEIPT reading for the same shift, tank, and product.' },
+      }, 400);
+    }
+
+    const [existingUsage] = await db
+      .select()
+      .from(require('../../db/schema').fuelReceiptTankLines)
+      .where(
+        andOp(
+          eqOp(require('../../db/schema').fuelReceiptTankLines.postDecantReadingId, targetPostId),
+          neOp(require('../../db/schema').fuelReceiptTankLines.id, lineId)
+        )
+      );
+    if (existingUsage) {
+      return c.json({
+        success: false,
+        data: null,
+        error: { code: 'RECEIPT_READING_ALREADY_LINKED', message: 'POST_RECEIPT reading is already linked to another receipt line.' },
+      }, 409);
+    }
+  }
+
+  if (targetPreId && targetPostId) {
+    const preReading = (await pumpRepo.findTankReadingById(targetPreId))!;
+    const postReading = (await pumpRepo.findTankReadingById(targetPostId))!;
+
+    if (postReading.recordedAt <= preReading.recordedAt) {
+      return c.json({
+        success: false,
+        data: null,
+        error: { code: 'INVALID_DECANTATION_TIMESTAMPS', message: 'POST reading timestamp must be strictly after PRE reading timestamp.' },
+      }, 400);
+    }
+
+    measuredReceivedMilli = postReading.netProductVolumeMilliunits - preReading.netProductVolumeMilliunits;
+    if (measuredReceivedMilli < 0) {
+      return c.json({
+        success: false,
+        data: null,
+        error: { code: 'INVALID_DECANTATION_VOLUME', message: 'Measured decantation volume cannot be negative.' },
+      }, 400);
+    }
+
+    receiptVarianceMilli = measuredReceivedMilli - existingLine.invoiceQuantityMilliunits;
   }
 
   let densityMilli = density !== undefined ? (density ? parseMilliunits(density) : null) : existingLine.densityMilliunits;
@@ -377,6 +538,8 @@ fuelReceipts.patch('/fuel-receipt-lines/:lineId', requirePermission(PERMISSIONS.
 
   let qualityStatus: QualityStatus = existingLine.qualityStatus as QualityStatus;
   let densityVarianceMilli: number | null = existingLine.densityVarianceMilliunits;
+  let appliedSettingId: string | null = existingLine.appliedToleranceSettingId || null;
+  let appliedToleranceMilli: number | null = existingLine.appliedDensityToleranceMilliunits || null;
 
   if (densityMilli != null && invDensityMilli != null) {
     const qRes = await QualityToleranceService.evaluateDensityQuality(
@@ -384,10 +547,13 @@ fuelReceipts.patch('/fuel-receipt-lines/:lineId', requirePermission(PERMISSIONS.
       receipt.outletId,
       existingLine.productId,
       densityMilli,
-      invDensityMilli
+      invDensityMilli,
+      receipt.invoiceDate || receipt.arrivalAt
     );
     qualityStatus = qRes.qualityStatus;
     densityVarianceMilli = qRes.densityVarianceMilliunits;
+    appliedSettingId = qRes.appliedToleranceSettingId;
+    appliedToleranceMilli = qRes.appliedToleranceMilliunits;
   }
 
   const nowIso = new Date().toISOString();
@@ -401,6 +567,8 @@ fuelReceipts.patch('/fuel-receipt-lines/:lineId', requirePermission(PERMISSIONS.
     invoiceDensityMilliunits: invDensityMilli,
     densityVarianceMilliunits: densityVarianceMilli,
     qualityStatus,
+    appliedToleranceSettingId: appliedSettingId,
+    appliedDensityToleranceMilliunits: appliedToleranceMilli,
     updatedAt: nowIso,
   });
 

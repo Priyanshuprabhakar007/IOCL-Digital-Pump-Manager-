@@ -13,6 +13,7 @@ import { DocumentsPage } from './frontend/pages/DocumentsPage';
 import { ProductsPage } from './frontend/pages/ProductsPage';
 import { PumpInfrastructurePage } from './frontend/pages/PumpInfrastructurePage';
 import { ShiftOperationsPage } from './frontend/pages/ShiftOperationsPage';
+import { StockOperationsPage } from './frontend/pages/StockOperationsPage';
 
 function MainAppContent() {
   const { userCtx, loading } = useAuth();
@@ -45,6 +46,7 @@ function MainAppContent() {
       {activeTab === 'products' && <ProductsPage />}
       {activeTab === 'pump-infra' && <PumpInfrastructurePage />}
       {activeTab === 'shift-ops' && <ShiftOperationsPage />}
+      {activeTab === 'stock-ops' && <StockOperationsPage />}
       {activeTab === 'users' && <UsersPage />}
       {activeTab === 'scopes' && <ScopesPage />}
       {activeTab === 'hierarchy' && <HierarchyPage />}

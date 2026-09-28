@@ -551,6 +551,9 @@ export interface FuelReceiptTankLine {
   densityVarianceMilliunits?: number | null;
   densityVarianceStr?: string | null;
   qualityStatus: QualityStatus;
+  appliedToleranceSettingId?: string | null;
+  appliedDensityToleranceMilliunits?: number | null;
+  appliedDensityToleranceStr?: string | null;
   createdAt: string;
   updatedAt: string;
   tankNumber?: number;
@@ -622,13 +625,13 @@ export interface ShiftStockSummary {
     productCode: string;
     productName: string;
     productUnit: ProductUnit;
-    openingStockStr: string;
+    openingStockStr: string | null;
     receiptQuantityStr: string;
     salesQuantityStr: string;
-    theoreticalClosingStockStr: string;
-    physicalClosingStockStr: string;
-    varianceStr: string;
-    varianceStatus: VarianceStatus;
+    theoreticalClosingStockStr: string | null;
+    physicalClosingStockStr: string | null;
+    varianceStr: string | null;
+    varianceStatus: VarianceStatus | null;
     hasOpeningReading: boolean;
     hasClosingReading: boolean;
     receiptsCount: number;

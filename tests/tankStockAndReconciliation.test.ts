@@ -586,4 +586,416 @@ describe('IOCL Digital Pump Manager Phase 2B Tank Stock, Fuel Receipt & Reconcil
     );
     expect(calibRes.status).toBe(403);
   });
+
+  // 8. Shift close requires tank stock data (400 INCOMPLETE_TANK_STOCK_DATA)
+  it('8. Shift close with tank snapshots and ZERO tank readings is rejected (400 INCOMPLETE_TANK_STOCK_DATA)', async () => {
+    const { cookie: dealerCookie } = await loginAs('dealer.parkstreet@iocl.in');
+
+    const openRes = await app.fetch(
+      new Request('http://localhost/api/v1/outlets/ro-1001/shifts/open', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: dealerCookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({ shiftTemplateId: 'st-ro1-1', businessDate: '2026-11-01' }),
+      }),
+      env
+    );
+    const shiftId = ((await openRes.json()) as any).data.id;
+
+    // Attempt close with 0 tank readings
+    const closeRes = await app.fetch(
+      new Request(`http://localhost/api/v1/shifts/${shiftId}/close`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: dealerCookie, Origin: 'http://localhost:3000' },
+      }),
+      env
+    );
+    expect(closeRes.status).toBe(400);
+    const json: any = await closeRes.json();
+    expect(json.error.code).toBe('INCOMPLETE_TANK_STOCK_DATA');
+    expect(json.error.details).toBeDefined();
+    expect(json.error.details.missingReadingTypes).toEqual(['OPENING', 'CLOSING']);
+  });
+
+  // 9. Missing opening or closing reading blocks shift close and stock reconciliation compute
+  it('9. Missing opening/closing reading blocks shift close and reconciliation compute with clear details', async () => {
+    const { cookie: dealerCookie } = await loginAs('dealer.parkstreet@iocl.in');
+
+    const openRes = await app.fetch(
+      new Request('http://localhost/api/v1/outlets/ro-1001/shifts/open', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: dealerCookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({ shiftTemplateId: 'st-ro1-1', businessDate: '2026-11-02' }),
+      }),
+      env
+    );
+    const shiftId = ((await openRes.json()) as any).data.id;
+
+    // Record only OPENING reading for Tank 1
+    await app.fetch(
+      new Request(`http://localhost/api/v1/shifts/${shiftId}/tank-readings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: dealerCookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({ tankId: 'tank-ro1-1', readingType: 'OPENING', productDipMm: '1000.000', waterDipMm: '0.000' }),
+      }),
+      env
+    );
+
+    // Compute reconciliation fails -> 400 INCOMPLETE_TANK_STOCK_DATA
+    const computeRes = await app.fetch(
+      new Request(`http://localhost/api/v1/shifts/${shiftId}/stock-reconciliation/compute`, {
+        method: 'POST',
+        headers: { Cookie: dealerCookie, Origin: 'http://localhost:3000' },
+      }),
+      env
+    );
+    expect(computeRes.status).toBe(400);
+
+    // Shift close fails -> 400
+    const closeRes = await app.fetch(
+      new Request(`http://localhost/api/v1/shifts/${shiftId}/close`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: dealerCookie, Origin: 'http://localhost:3000' },
+      }),
+      env
+    );
+    expect(closeRes.status).toBe(400);
+    const json: any = await closeRes.json();
+    expect(json.error.code).toBe('INCOMPLETE_TANK_STOCK_DATA');
+  });
+
+  // 10. GET stock reconciliation exposes null for missing numeric values without fabricating 0
+  it('10. GET stock reconciliation exposes null for missing numeric values without fabricating 0', async () => {
+    const { cookie: dealerCookie } = await loginAs('dealer.parkstreet@iocl.in');
+
+    const openRes = await app.fetch(
+      new Request('http://localhost/api/v1/outlets/ro-1001/shifts/open', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: dealerCookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({ shiftTemplateId: 'st-ro1-1', businessDate: '2026-11-03' }),
+      }),
+      env
+    );
+    const shiftId = ((await openRes.json()) as any).data.id;
+
+    const summaryRes = await app.fetch(
+      new Request(`http://localhost/api/v1/shifts/${shiftId}/stock-reconciliation`, {
+        headers: { Cookie: dealerCookie, Origin: 'http://localhost:3000' },
+      }),
+      env
+    );
+    expect(summaryRes.status).toBe(200);
+    const json: any = await summaryRes.json();
+    const t1 = json.data.byTank.find((t: any) => t.tankNumber === 1);
+
+    expect(t1.hasOpeningReading).toBe(false);
+    expect(t1.hasClosingReading).toBe(false);
+    expect(t1.openingStockStr).toBeNull();
+    expect(t1.physicalClosingStockStr).toBeNull();
+    expect(t1.theoreticalClosingStockStr).toBeNull();
+    expect(t1.varianceStr).toBeNull();
+  });
+
+  // 11. Strict PRE and POST decantation reading validation
+  it('11. Strict decantation validation: PRE/POST type, same shift/tank/product, and positive volume', async () => {
+    const { cookie: dealerCookie } = await loginAs('dealer.parkstreet@iocl.in');
+
+    const openRes = await app.fetch(
+      new Request('http://localhost/api/v1/outlets/ro-1001/shifts/open', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: dealerCookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({ shiftTemplateId: 'st-ro1-1', businessDate: '2026-11-04' }),
+      }),
+      env
+    );
+    const shiftId = ((await openRes.json()) as any).data.id;
+
+    // Create OPENING reading
+    const openDip = await app.fetch(
+      new Request(`http://localhost/api/v1/shifts/${shiftId}/tank-readings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: dealerCookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({ tankId: 'tank-ro1-1', readingType: 'OPENING', productDipMm: '1000.000', waterDipMm: '0.000' }),
+      }),
+      env
+    );
+    const openDipId = ((await openDip.json()) as any).data.id;
+
+    // Create Fuel Receipt
+    const rcptRes = await app.fetch(
+      new Request(`http://localhost/api/v1/shifts/${shiftId}/fuel-receipts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: dealerCookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({
+          ttNumber: 'TT-TEST-11',
+          invoiceNumber: 'INV-TEST-11',
+          invoiceDate: '2026-11-04',
+          arrivalAt: '2026-11-04T10:00:00Z',
+          lines: [{ tankId: 'tank-ro1-1', productId: 'prod-ms', invoiceQuantity: '5000.000' }],
+        }),
+      }),
+      env
+    );
+    const rcpt = ((await rcptRes.json()) as any).data;
+    const lineId = rcpt.lines[0].id;
+
+    // Attempt to link OPENING reading as PRE reading -> 400
+    const invalidLinkRes = await app.fetch(
+      new Request(`http://localhost/api/v1/fuel-receipt-lines/${lineId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Cookie: dealerCookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({ preDecantReadingId: openDipId }),
+      }),
+      env
+    );
+    expect(invalidLinkRes.status).toBe(400);
+    const invJson: any = await invalidLinkRes.json();
+    expect(invJson.error.code).toBe('INVALID_DECANTATION_READING');
+  });
+
+  // 12. Prevent receipt reading reuse (409 RECEIPT_READING_ALREADY_LINKED)
+  it('12. Prevents receipt reading reuse across multiple receipt lines (409 RECEIPT_READING_ALREADY_LINKED)', async () => {
+    const { cookie: dealerCookie } = await loginAs('dealer.parkstreet@iocl.in');
+
+    const openRes = await app.fetch(
+      new Request('http://localhost/api/v1/outlets/ro-1001/shifts/open', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: dealerCookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({ shiftTemplateId: 'st-ro1-1', businessDate: '2026-11-05' }),
+      }),
+      env
+    );
+    const shiftId = ((await openRes.json()) as any).data.id;
+
+    // Create 1 PRE_RECEIPT reading for tank-ro1-1
+    const preRes = await app.fetch(
+      new Request(`http://localhost/api/v1/shifts/${shiftId}/tank-readings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: dealerCookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({ tankId: 'tank-ro1-1', readingType: 'PRE_RECEIPT', productDipMm: '1000.000', waterDipMm: '0.000' }),
+      }),
+      env
+    );
+    const preId = ((await preRes.json()) as any).data.id;
+
+    // Create 2 Fuel Receipts for same shift
+    const r1 = await app.fetch(
+      new Request(`http://localhost/api/v1/shifts/${shiftId}/fuel-receipts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: dealerCookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({
+          ttNumber: 'TT-R1',
+          invoiceNumber: 'INV-R1',
+          invoiceDate: '2026-11-05',
+          arrivalAt: '2026-11-05T10:00:00Z',
+          lines: [{ tankId: 'tank-ro1-1', productId: 'prod-ms', invoiceQuantity: '5000.000' }],
+        }),
+      }),
+      env
+    );
+    const r1LineId = ((await r1.json()) as any).data.lines[0].id;
+
+    const r2 = await app.fetch(
+      new Request(`http://localhost/api/v1/shifts/${shiftId}/fuel-receipts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: dealerCookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({
+          ttNumber: 'TT-R2',
+          invoiceNumber: 'INV-R2',
+          invoiceDate: '2026-11-05',
+          arrivalAt: '2026-11-05T10:30:00Z',
+          lines: [{ tankId: 'tank-ro1-1', productId: 'prod-ms', invoiceQuantity: '5000.000' }],
+        }),
+      }),
+      env
+    );
+    const r2LineId = ((await r2.json()) as any).data.lines[0].id;
+
+    // Link preId to line 1
+    const l1Res = await app.fetch(
+      new Request(`http://localhost/api/v1/fuel-receipt-lines/${r1LineId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Cookie: dealerCookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({ preDecantReadingId: preId }),
+      }),
+      env
+    );
+    expect(l1Res.status).toBe(200);
+
+    // Attempt to reuse preId on line 2 -> 409
+    const l2Res = await app.fetch(
+      new Request(`http://localhost/api/v1/fuel-receipt-lines/${r2LineId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Cookie: dealerCookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({ preDecantReadingId: preId }),
+      }),
+      env
+    );
+    expect(l2Res.status).toBe(409);
+    const l2Json: any = await l2Res.json();
+    expect(l2Json.error.code).toBe('RECEIPT_READING_ALREADY_LINKED');
+  });
+
+  // 13. Receipt state machine & terminal protection (409 RECEIPT_FINALIZED)
+  it('13. Enforces controlled receipt status transitions and rejects modification once COMPLETED or CANCELLED', async () => {
+    const { cookie: dealerCookie } = await loginAs('dealer.parkstreet@iocl.in');
+
+    const openRes = await app.fetch(
+      new Request('http://localhost/api/v1/outlets/ro-1001/shifts/open', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: dealerCookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({ shiftTemplateId: 'st-ro1-1', businessDate: '2026-11-06' }),
+      }),
+      env
+    );
+    const shiftId = ((await openRes.json()) as any).data.id;
+
+    const rRes = await app.fetch(
+      new Request(`http://localhost/api/v1/shifts/${shiftId}/fuel-receipts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: dealerCookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({
+          ttNumber: 'TT-TERM',
+          invoiceNumber: 'INV-TERM',
+          invoiceDate: '2026-11-06',
+          arrivalAt: '2026-11-06T10:00:00Z',
+          lines: [{ tankId: 'tank-ro1-1', productId: 'prod-ms', invoiceQuantity: '5000.000' }],
+        }),
+      }),
+      env
+    );
+    const rcpt = ((await rRes.json()) as any).data;
+
+    // Transition ARRIVED -> CANCELLED
+    const cancelRes = await app.fetch(
+      new Request(`http://localhost/api/v1/fuel-receipts/${rcpt.id}/status`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Cookie: dealerCookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({ status: 'CANCELLED' }),
+      }),
+      env
+    );
+    expect(cancelRes.status).toBe(200);
+
+    // Attempt to modify CANCELLED receipt line -> 409 RECEIPT_FINALIZED
+    const modRes = await app.fetch(
+      new Request(`http://localhost/api/v1/fuel-receipt-lines/${rcpt.lines[0].id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Cookie: dealerCookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({ density: '745.000' }),
+      }),
+      env
+    );
+    expect(modRes.status).toBe(409);
+    const modJson: any = await modRes.json();
+    expect(modJson.error.code).toBe('RECEIPT_FINALIZED');
+  });
+
+  // 14. Quality tolerance scope security (State Office cannot manage GLOBAL or other state rules)
+  it('14. Quality tolerance scope security blocks State Office user from managing GLOBAL or other State rules (403 FORBIDDEN)', async () => {
+    const { cookie: stateCookie } = await loginAs('wbso@iocl.in');
+
+    // State office attempts to create GLOBAL rule -> 403
+    const globalRes = await app.fetch(
+      new Request('http://localhost/api/v1/quality-tolerances', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: stateCookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({
+          scopeType: 'GLOBAL',
+          densityTolerance: '2.000',
+          effectiveFrom: '2026-01-01',
+        }),
+      }),
+      env
+    );
+    expect(globalRes.status).toBe(403);
+
+    // State office attempts to create rule for State Delhi (state-dl) -> 403
+    const otherStateRes = await app.fetch(
+      new Request('http://localhost/api/v1/quality-tolerances', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: stateCookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({
+          scopeType: 'STATE',
+          scopeEntityId: 'state-dl',
+          densityTolerance: '2.500',
+          effectiveFrom: '2026-01-01',
+        }),
+      }),
+      env
+    );
+    expect(otherStateRes.status).toBe(403);
+
+    // State office creates rule for their own State WB (state-wb) -> 201
+    const ownStateRes = await app.fetch(
+      new Request('http://localhost/api/v1/quality-tolerances', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: stateCookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({
+          scopeType: 'STATE',
+          scopeEntityId: 'state-wb',
+          densityTolerance: '2.500',
+          effectiveFrom: '2026-01-01',
+        }),
+      }),
+      env
+    );
+    expect(ownStateRes.status).toBe(201);
+  });
+
+  // 15. Quality rule validity checks & overlapping active rules rejection
+  it('15. Rejects effective_to < effective_from and overlapping active quality rules (409 OVERLAPPING_QUALITY_RULE)', async () => {
+    const { cookie: adminCookie } = await loginAs('admin@iocl.in');
+
+    // Invalid dates: effective_to < effective_from
+    const badDateRes = await app.fetch(
+      new Request('http://localhost/api/v1/quality-tolerances', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: adminCookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({
+          scopeType: 'GLOBAL',
+          densityTolerance: '3.000',
+          effectiveFrom: '2026-06-01',
+          effectiveTo: '2026-05-01',
+        }),
+      }),
+      env
+    );
+    expect(badDateRes.status).toBe(400);
+
+    // Create Rule 1: 2026-01-01 to 2026-12-31
+    const r1 = await app.fetch(
+      new Request('http://localhost/api/v1/quality-tolerances', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: adminCookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({
+          scopeType: 'GLOBAL',
+          productId: 'prod-ms',
+          densityTolerance: '3.000',
+          effectiveFrom: '2026-01-01',
+          effectiveTo: '2026-12-31',
+        }),
+      }),
+      env
+    );
+    expect(r1.status).toBe(201);
+
+    // Create Rule 2 overlapping with Rule 1 for same scope and product -> 409 OVERLAPPING_QUALITY_RULE
+    const r2 = await app.fetch(
+      new Request('http://localhost/api/v1/quality-tolerances', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: adminCookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({
+          scopeType: 'GLOBAL',
+          productId: 'prod-ms',
+          densityTolerance: '2.500',
+          effectiveFrom: '2026-06-01',
+          effectiveTo: '2027-06-01',
+        }),
+      }),
+      env
+    );
+    expect(r2.status).toBe(409);
+    const r2Json: any = await r2.json();
+    expect(r2Json.error.code).toBe('OVERLAPPING_QUALITY_RULE');
+  });
 });

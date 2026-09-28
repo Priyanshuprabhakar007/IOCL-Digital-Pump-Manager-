@@ -15,6 +15,7 @@ import {
   Fuel,
   Gauge,
   Clock,
+  Droplets,
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -62,6 +63,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
       label: 'Shift Operations',
       icon: Clock,
       perm: PERMISSIONS.SHIFTS_READ,
+    },
+    {
+      id: 'stock-ops',
+      label: 'Stock & Decantation',
+      icon: Droplets,
+      perm: PERMISSIONS.TANK_STOCK_READ,
     },
     {
       id: 'users',

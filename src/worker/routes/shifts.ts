@@ -208,8 +208,21 @@ shifts.post('/shifts/:shiftId/close', requirePermission(PERMISSIONS.SHIFTS_CLOSE
     }, 409);
   }
 
-  // Completeness Validation:
-  // Must verify every snapshot nozzle assigned at opening has a valid meter reading or approved unavailability record.
+  // 1. Tank Stock & Receipts Completeness Check
+  const tankCheck = await pumpRepo.validateShiftCompleteness(shiftId);
+  if (!tankCheck.valid) {
+    return c.json({
+      success: false,
+      data: null,
+      error: {
+        code: tankCheck.error || 'INCOMPLETE_TANK_STOCK_DATA',
+        message: tankCheck.message || 'Tank stock data is incomplete',
+        details: tankCheck.details || null,
+      },
+    }, 400);
+  }
+
+  // 2. Nozzle Meter Readings Completeness Check
   const snapshots = await pumpRepo.listShiftNozzleSnapshots(shiftId);
   const readings = await pumpRepo.listReadingsForShift(shiftId);
   const unavails = await pumpRepo.listUnavailabilityForShift(shiftId);

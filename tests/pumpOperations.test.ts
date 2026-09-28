@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import app from '../src/worker/app';
 import { createLocalD1Database } from '../src/db/localD1';
 import { getDb } from '../src/db';
+import { PumpRepository } from '../src/worker/repositories/pumpRepository';
 import { seedDatabase } from '../src/db/seed';
 import * as schema from '../src/db/schema';
 import { eq, and } from 'drizzle-orm';
@@ -469,6 +470,27 @@ describe('IOCL Digital Pump Manager Phase 2A Hardened Operations Suite', () => {
       env
     );
 
+    // Record opening & closing tank stock readings for tank-ro1-1, tank-ro1-2, tank-ro1-3
+    const tanksToRead = ['tank-ro1-1', 'tank-ro1-2', 'tank-ro1-3'];
+    for (const tId of tanksToRead) {
+      await app.fetch(
+        new Request(`http://localhost/api/v1/shifts/${shiftId}/tank-readings`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Cookie: dealerCookie, Origin: 'http://localhost:3000' },
+          body: JSON.stringify({ tankId: tId, readingType: 'OPENING', source: 'MANUAL', productDipMm: '1500.000', waterDipMm: '0.000' }),
+        }),
+        env
+      );
+      await app.fetch(
+        new Request(`http://localhost/api/v1/shifts/${shiftId}/tank-readings`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Cookie: dealerCookie, Origin: 'http://localhost:3000' },
+          body: JSON.stringify({ tankId: tId, readingType: 'CLOSING', source: 'MANUAL', productDipMm: '1400.000', waterDipMm: '0.000' }),
+        }),
+        env
+      );
+    }
+
     // 3. Close the shift
     const closeRes = await app.fetch(
       new Request(`http://localhost/api/v1/shifts/${shiftId}/close`, {
@@ -582,6 +604,49 @@ describe('IOCL Digital Pump Manager Phase 2A Hardened Operations Suite', () => {
       env
     );
 
+    // Record required tank opening and closing readings
+    const db = getDb(localD1);
+    const pumpRepo = new PumpRepository(db);
+    const tankSnaps = await pumpRepo.listShiftTankSnapshots(shiftId);
+    for (const ts of tankSnaps) {
+      await pumpRepo.createTankReading({
+        id: `tsr-open-${ts.tankId}-${shiftId}`,
+        operationalShiftId: shiftId,
+        outletId: 'ro-1001',
+        tankId: ts.tankId,
+        productId: ts.productId,
+        readingType: 'OPENING',
+        source: 'MANUAL',
+        productDipMmMilliunits: 1500000,
+        waterDipMmMilliunits: 0,
+        grossObservedVolumeMilliunits: 10000000,
+        waterVolumeMilliunits: 0,
+        netProductVolumeMilliunits: 10000000,
+        recordedAt: new Date().toISOString(),
+        recordedByUserId: 'user-dealer',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+      await pumpRepo.createTankReading({
+        id: `tsr-close-${ts.tankId}-${shiftId}`,
+        operationalShiftId: shiftId,
+        outletId: 'ro-1001',
+        tankId: ts.tankId,
+        productId: ts.productId,
+        readingType: 'CLOSING',
+        source: 'MANUAL',
+        productDipMmMilliunits: 1400000,
+        waterDipMmMilliunits: 0,
+        grossObservedVolumeMilliunits: 9000000,
+        waterVolumeMilliunits: 0,
+        netProductVolumeMilliunits: 9000000,
+        recordedAt: new Date().toISOString(),
+        recordedByUserId: 'user-dealer',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+    }
+
     // Close the shift
     const closeRes = await app.fetch(
       new Request(`http://localhost/api/v1/shifts/${shiftId}/close`, {
@@ -683,7 +748,7 @@ describe('IOCL Digital Pump Manager Phase 2A Hardened Operations Suite', () => {
     expect(openRes.status).toBe(201);
     const shiftId = ((await openRes.json()) as any).data.id;
 
-    // Set all nozzles unavailable to allow closing
+    // Set all nozzles unavailable and create opening/closing tank readings
     const snapshots = await pumpRepo.listShiftNozzleSnapshots(shiftId);
     for (const snap of snapshots) {
       await pumpRepo.recordUnavailability({
@@ -693,6 +758,46 @@ describe('IOCL Digital Pump Manager Phase 2A Hardened Operations Suite', () => {
         reason: 'Shift end check',
         recordedBy: 'user-admin',
         createdAt: new Date().toISOString(),
+      });
+    }
+
+    const tankSnaps = await pumpRepo.listShiftTankSnapshots(shiftId);
+    for (const ts of tankSnaps) {
+      await pumpRepo.createTankReading({
+        id: `tsr-open-${ts.tankId}-${shiftId}`,
+        operationalShiftId: shiftId,
+        outletId: 'ro-1001',
+        tankId: ts.tankId,
+        productId: ts.productId,
+        readingType: 'OPENING',
+        source: 'MANUAL',
+        productDipMmMilliunits: 1500000,
+        waterDipMmMilliunits: 0,
+        grossObservedVolumeMilliunits: 10000000,
+        waterVolumeMilliunits: 0,
+        netProductVolumeMilliunits: 10000000,
+        recordedAt: new Date().toISOString(),
+        recordedByUserId: 'user-admin',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+      await pumpRepo.createTankReading({
+        id: `tsr-close-${ts.tankId}-${shiftId}`,
+        operationalShiftId: shiftId,
+        outletId: 'ro-1001',
+        tankId: ts.tankId,
+        productId: ts.productId,
+        readingType: 'CLOSING',
+        source: 'MANUAL',
+        productDipMmMilliunits: 1400000,
+        waterDipMmMilliunits: 0,
+        grossObservedVolumeMilliunits: 9000000,
+        waterVolumeMilliunits: 0,
+        netProductVolumeMilliunits: 9000000,
+        recordedAt: new Date().toISOString(),
+        recordedByUserId: 'user-admin',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
       });
     }
 

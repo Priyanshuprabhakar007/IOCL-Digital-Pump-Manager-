@@ -59,21 +59,32 @@ stockReconciliation.post('/shifts/:shiftId/stock-reconciliation/compute', requir
     return c.json({ success: false, data: null, error: { code: 'FORBIDDEN', message: 'No authority over this shift outlet' } }, 403);
   }
 
-  const results = await pumpRepo.calculateAndSaveShiftStockReconciliation(shiftId);
+  try {
+    const results = await pumpRepo.calculateAndSaveShiftStockReconciliation(shiftId);
 
-  await auditRepo.logAction({
-    id: `aud-${crypto.randomUUID()}`,
-    userId: c.var.user!.user.id,
-    action: 'STOCK_RECONCILIATION_COMPUTE',
-    entityType: 'STOCK_RECONCILIATION',
-    entityId: shiftId,
-    newValue: { tanksCount: results.length } as Record<string, unknown>,
-    ipAddress: c.req.header('cf-connecting-ip') || null,
-    userAgent: c.req.header('user-agent') || null,
-    createdAt: new Date().toISOString(),
-  });
+    await auditRepo.logAction({
+      id: `aud-${crypto.randomUUID()}`,
+      userId: c.var.user!.user.id,
+      action: 'STOCK_RECONCILIATION_COMPUTE',
+      entityType: 'STOCK_RECONCILIATION',
+      entityId: shiftId,
+      newValue: { tanksCount: results.length } as Record<string, unknown>,
+      ipAddress: c.req.header('cf-connecting-ip') || null,
+      userAgent: c.req.header('user-agent') || null,
+      createdAt: new Date().toISOString(),
+    });
 
-  return c.json({ success: true, data: results, error: null });
+    return c.json({ success: true, data: results, error: null });
+  } catch (err: any) {
+    return c.json({
+      success: false,
+      data: null,
+      error: {
+        code: err?.code || 'INCOMPLETE_TANK_STOCK_DATA',
+        message: err?.message || 'Cannot compute stock reconciliation due to incomplete tank stock readings.',
+      },
+    }, 400);
+  }
 });
 
 export default stockReconciliation;

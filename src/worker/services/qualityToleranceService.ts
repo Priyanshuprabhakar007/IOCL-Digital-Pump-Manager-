@@ -13,17 +13,20 @@ export class QualityToleranceService {
     outletId: string,
     productId: string,
     observedDensityMilliunits: number | null | undefined,
-    invoiceDensityMilliunits: number | null | undefined
+    invoiceDensityMilliunits: number | null | undefined,
+    evalDate?: string | null
   ): Promise<{
     qualityStatus: QualityStatus;
     densityVarianceMilliunits: number | null;
     appliedToleranceMilliunits: number | null;
+    appliedToleranceSettingId: string | null;
   }> {
     if (observedDensityMilliunits == null || invoiceDensityMilliunits == null) {
       return {
         qualityStatus: 'NOT_EVALUATED',
         densityVarianceMilliunits: null,
         appliedToleranceMilliunits: null,
+        appliedToleranceSettingId: null,
       };
     }
 
@@ -36,10 +39,11 @@ export class QualityToleranceService {
         qualityStatus: 'NOT_EVALUATED',
         densityVarianceMilliunits,
         appliedToleranceMilliunits: null,
+        appliedToleranceSettingId: null,
       };
     }
 
-    const nowIsoDate = new Date().toISOString().split('T')[0];
+    const dateStr = evalDate ? evalDate.split('T')[0] : new Date().toISOString().split('T')[0];
 
     // Fetch all active tolerance settings
     const activeRules = await db
@@ -48,10 +52,10 @@ export class QualityToleranceService {
       .where(
         and(
           eq(schema.qualityToleranceSettings.status, 'ACTIVE'),
-          lte(schema.qualityToleranceSettings.effectiveFrom, nowIsoDate),
+          lte(schema.qualityToleranceSettings.effectiveFrom, dateStr),
           or(
             isNull(schema.qualityToleranceSettings.effectiveTo),
-            gte(schema.qualityToleranceSettings.effectiveTo, nowIsoDate)
+            gte(schema.qualityToleranceSettings.effectiveTo, dateStr)
           )
         )
       );
@@ -90,6 +94,7 @@ export class QualityToleranceService {
         qualityStatus: 'NOT_EVALUATED',
         densityVarianceMilliunits,
         appliedToleranceMilliunits: null,
+        appliedToleranceSettingId: null,
       };
     }
 
@@ -100,6 +105,7 @@ export class QualityToleranceService {
       qualityStatus: pass ? 'PASS' : 'OUT_OF_TOLERANCE',
       densityVarianceMilliunits,
       appliedToleranceMilliunits: matchedRule.densityToleranceMilliunits,
+      appliedToleranceSettingId: matchedRule.id,
     };
   }
 }

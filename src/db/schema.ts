@@ -296,7 +296,7 @@ export const operationalShifts = sqliteTable('operational_shifts', {
   businessDate: text('business_date').notNull(),
   startedAt: text('started_at').notNull(),
   closedAt: text('closed_at'),
-  status: text('status', { enum: ['OPEN', 'CLOSED', 'LOCKED'] }).notNull().default('OPEN'),
+  status: text('status', { enum: ['OPEN', 'CLOSING', 'CLOSED', 'LOCKED'] }).notNull().default('OPEN'),
   openedByUserId: text('opened_by_user_id').notNull().references(() => users.id),
   closedByUserId: text('closed_by_user_id').references(() => users.id),
   notes: text('notes'),
@@ -470,9 +470,13 @@ export const fuelReceiptTankLines = sqliteTable('fuel_receipt_tank_lines', {
   invoiceDensityMilliunits: integer('invoice_density_milliunits'),
   densityVarianceMilliunits: integer('density_variance_milliunits'),
   qualityStatus: text('quality_status', { enum: ['PASS', 'OUT_OF_TOLERANCE', 'NOT_EVALUATED'] }).notNull().default('NOT_EVALUATED'),
+  appliedToleranceSettingId: text('applied_tolerance_setting_id').references(() => qualityToleranceSettings.id),
+  appliedDensityToleranceMilliunits: integer('applied_density_tolerance_milliunits'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
 }, (table) => [
+  uniqueIndex('idx_frtl_unique_pre_reading').on(table.preDecantReadingId).where(sql`pre_decant_reading_id IS NOT NULL`),
+  uniqueIndex('idx_frtl_unique_post_reading').on(table.postDecantReadingId).where(sql`post_decant_reading_id IS NOT NULL`),
   index('idx_frtl_receipt_id').on(table.fuelReceiptId),
   index('idx_frtl_tank_id').on(table.tankId),
 ]);
