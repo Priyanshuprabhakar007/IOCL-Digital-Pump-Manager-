@@ -4,12 +4,10 @@ import * as schema from '../../db/schema';
 import { eq, inArray, desc } from 'drizzle-orm';
 import { requireAuth, AppContext, EnvBindings } from '../middleware/auth';
 import { requirePermission } from '../middleware/permission';
-import { requireOutletAccess } from '../middleware/scope';
-import { DocumentMetadataSchema } from '../../shared/validators';
-import { PERMISSIONS } from '../../shared/constants';
 import { ScopeService } from '../services/scopeService';
 import { OutletRepository } from '../repositories/outletRepository';
 import { AuditRepository } from '../repositories/auditRepository';
+import { PERMISSIONS } from '../../shared/constants';
 
 const documents = new Hono<{ Bindings: EnvBindings }>();
 
@@ -34,7 +32,7 @@ documents.get('/', requirePermission(PERMISSIONS.DOCUMENTS_READ) as any, async (
     .orderBy(desc(schema.documents.createdAt));
 
   let docsList: any[] = [];
-  if (c.var.user.isGlobalAdmin || c.var.user.primaryScope === 'GLOBAL') {
+  if (c.var.user.isGlobalScope) {
     docsList = await query;
   } else if (accessibleOutletIds.length > 0) {
     docsList = await query.where(inArray(schema.documents.outletId, accessibleOutletIds));
@@ -62,49 +60,86 @@ documents.get('/', requirePermission(PERMISSIONS.DOCUMENTS_READ) as any, async (
   });
 });
 
+// Secure Authenticated Upload Endpoint with Server-Side R2 Key Generation
 documents.post('/', requirePermission(PERMISSIONS.DOCUMENTS_WRITE) as any, async (c: AppContext) => {
-  const body = await c.req.json().catch(() => ({}));
-  const parseResult = DocumentMetadataSchema.safeParse(body);
-
-  if (!parseResult.success) {
-    return c.json({
-      success: false,
-      data: null,
-      error: {
-        code: 'VALIDATION_ERROR',
-        message: 'Invalid document payload',
-        details: parseResult.error.flatten(),
-      },
-    }, 400);
-  }
-
-  const payload = parseResult.data;
   const db = getDb(c.env.DB);
   const outletRepo = new OutletRepository(db);
   const auditRepo = new AuditRepository(db);
 
-  if (payload.outletId) {
-    const hasAccess = await ScopeService.canAccessOutlet(c.var.user, payload.outletId, outletRepo);
-    if (!hasAccess) {
-      return c.json({
-        success: false,
-        data: null,
-        error: { code: 'FORBIDDEN', message: 'No scope access to specified outlet for document upload' },
-      }, 403);
+  let fileName = '';
+  let mimeType = '';
+  let sizeBytes = 0;
+  let outletId = '';
+  let fileBuffer: ArrayBuffer | undefined = undefined;
+
+  const contentType = c.req.header('content-type') || '';
+
+  if (contentType.includes('multipart/form-data')) {
+    const formData = await c.req.parseBody();
+    const file = formData['file'] as any;
+    outletId = (formData['outletId'] as string) || '';
+
+    if (!file || typeof file === 'string') {
+      return c.json({ success: false, data: null, error: { code: 'BAD_REQUEST', message: 'File is required for document upload' } }, 400);
     }
+
+    fileName = file.name || 'document.pdf';
+    mimeType = file.type || 'application/pdf';
+    sizeBytes = file.size || 0;
+    fileBuffer = await file.arrayBuffer();
+  } else {
+    const body = await c.req.json().catch(() => ({}));
+    fileName = body.name || '';
+    mimeType = body.mimeType || '';
+    sizeBytes = body.sizeBytes || 0;
+    outletId = body.outletId || '';
+  }
+
+  // Validate Input
+  if (!fileName || !outletId) {
+    return c.json({ success: false, data: null, error: { code: 'VALIDATION_ERROR', message: 'Document name and outletId are required' } }, 400);
+  }
+
+  const allowedMimeTypes = ['application/pdf', 'image/png', 'image/jpeg'];
+  if (!allowedMimeTypes.includes(mimeType)) {
+    return c.json({ success: false, data: null, error: { code: 'VALIDATION_ERROR', message: 'Only PDF, PNG, and JPEG documents are permitted' } }, 400);
+  }
+
+  if (sizeBytes > 5 * 1024 * 1024) {
+    return c.json({ success: false, data: null, error: { code: 'VALIDATION_ERROR', message: 'File size cannot exceed 5 MB' } }, 400);
+  }
+
+  // Verify Scope Access over target Outlet
+  const hasAccess = await ScopeService.canAccessOutlet(c.var.user, outletId, outletRepo);
+  if (!hasAccess) {
+    return c.json({
+      success: false,
+      data: null,
+      error: { code: 'FORBIDDEN', message: 'You do not have organizational scope access for this retail outlet.' },
+    }, 403);
+  }
+
+  // SERVER-SIDE R2 KEY GENERATION (Browser CANNOT control arbitrary R2 keys)
+  const sanitized = fileName.replace(/[^a-zA-Z0-9.-]/g, '_');
+  const docId = `doc-${crypto.randomUUID()}`;
+  const r2Key = `outlets/${outletId}/${docId}-${sanitized}`;
+
+  // Upload to R2 Bucket if binding is available
+  if (c.env.DOCUMENTS_BUCKET && typeof c.env.DOCUMENTS_BUCKET.put === 'function' && fileBuffer) {
+    await c.env.DOCUMENTS_BUCKET.put(r2Key, fileBuffer, {
+      httpMetadata: { contentType: mimeType },
+    });
   }
 
   const nowIso = new Date().toISOString();
-  const docId = `doc-${crypto.randomUUID()}`;
-  const r2Key = payload.r2Key || `docs/${payload.outletId || 'general'}/${docId}-${payload.name.replace(/[^a-zA-Z0-9.-]/g, '_')}`;
 
   await db.insert(schema.documents).values({
     id: docId,
     r2Key,
-    name: payload.name,
-    mimeType: payload.mimeType,
-    sizeBytes: payload.sizeBytes,
-    outletId: payload.outletId ?? null,
+    name: fileName,
+    mimeType,
+    sizeBytes,
+    outletId,
     uploadedByUserId: c.var.user.user.id,
     createdAt: nowIso,
   });
@@ -112,10 +147,10 @@ documents.post('/', requirePermission(PERMISSIONS.DOCUMENTS_WRITE) as any, async
   await auditRepo.logAction({
     id: `aud-${crypto.randomUUID()}`,
     userId: c.var.user.user.id,
-    action: 'DOCUMENT_METADATA_REGISTER',
+    action: 'DOCUMENT_UPLOAD',
     entityType: 'DOCUMENT',
     entityId: docId,
-    newValue: { name: payload.name, r2Key, sizeBytes: payload.sizeBytes },
+    newValue: { name: fileName, r2Key, mimeType, sizeBytes, outletId },
     ipAddress: c.req.header('cf-connecting-ip') || null,
     userAgent: c.req.header('user-agent') || null,
     createdAt: nowIso,
@@ -126,10 +161,10 @@ documents.post('/', requirePermission(PERMISSIONS.DOCUMENTS_WRITE) as any, async
     data: {
       id: docId,
       r2Key,
-      name: payload.name,
-      mimeType: payload.mimeType,
-      sizeBytes: payload.sizeBytes,
-      outletId: payload.outletId ?? null,
+      name: fileName,
+      mimeType,
+      sizeBytes,
+      outletId,
       uploadedByUserId: c.var.user.user.id,
       createdAt: nowIso,
     },

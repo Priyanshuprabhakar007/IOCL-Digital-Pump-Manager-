@@ -4,6 +4,7 @@ import { HierarchyRepository } from '../repositories/hierarchyRepository';
 import { AuditRepository } from '../repositories/auditRepository';
 import { requireAuth, AppContext, EnvBindings } from '../middleware/auth';
 import { requirePermission } from '../middleware/permission';
+import { ScopeService } from '../services/scopeService';
 import { StateSchema, DivisionSchema, SalesAreaSchema } from '../../shared/validators';
 import { PERMISSIONS } from '../../shared/constants';
 
@@ -11,20 +12,35 @@ const hierarchy = new Hono<{ Bindings: EnvBindings }>();
 
 hierarchy.use('*', requireAuth as any);
 
-// States
+// States - Filtered by Scope
 hierarchy.get('/states', async (c: AppContext) => {
   const db = getDb(c.env.DB);
   const repo = new HierarchyRepository(db);
-  const states = await repo.listStates();
+  const allStates = await repo.listStates();
+
+  if (c.var.user.isGlobalScope) {
+    return c.json({ success: true, data: allStates, error: null });
+  }
+
+  const filtered = [];
+  for (const st of allStates) {
+    if (await ScopeService.canAccessState(c.var.user, st.id)) {
+      filtered.push(st);
+    }
+  }
 
   return c.json({
     success: true,
-    data: states,
+    data: filtered,
     error: null,
   });
 });
 
 hierarchy.post('/states', requirePermission(PERMISSIONS.HIERARCHY_WRITE) as any, async (c: AppContext) => {
+  if (!c.var.user.isGlobalScope) {
+    return c.json({ success: false, data: null, error: { code: 'FORBIDDEN', message: 'Only GLOBAL accounts can register new State Offices.' } }, 403);
+  }
+
   const body = await c.req.json().catch(() => ({}));
   const parseResult = StateSchema.safeParse(body);
 
@@ -65,16 +81,27 @@ hierarchy.post('/states', requirePermission(PERMISSIONS.HIERARCHY_WRITE) as any,
   return c.json({ success: true, data: created, error: null });
 });
 
-// Divisions
+// Divisions - Filtered by Scope
 hierarchy.get('/divisions', async (c: AppContext) => {
   const stateId = c.req.query('stateId');
   const db = getDb(c.env.DB);
   const repo = new HierarchyRepository(db);
-  const divisions = await repo.listDivisions(stateId);
+  const allDivisions = await repo.listDivisions(stateId);
+
+  if (c.var.user.isGlobalScope) {
+    return c.json({ success: true, data: allDivisions, error: null });
+  }
+
+  const filtered = [];
+  for (const div of allDivisions) {
+    if (await ScopeService.canAccessDivision(c.var.user, div.id, repo)) {
+      filtered.push(div);
+    }
+  }
 
   return c.json({
     success: true,
-    data: divisions,
+    data: filtered,
     error: null,
   });
 });
@@ -94,6 +121,10 @@ hierarchy.post('/divisions', requirePermission(PERMISSIONS.HIERARCHY_WRITE) as a
   const db = getDb(c.env.DB);
   const repo = new HierarchyRepository(db);
   const auditRepo = new AuditRepository(db);
+
+  if (!await ScopeService.canAccessState(c.var.user, parseResult.data.stateId)) {
+    return c.json({ success: false, data: null, error: { code: 'FORBIDDEN', message: 'Cannot register Divisional Office outside your assigned State.' } }, 403);
+  }
 
   const parentState = await repo.findStateById(parseResult.data.stateId);
   if (!parentState) {
@@ -130,16 +161,27 @@ hierarchy.post('/divisions', requirePermission(PERMISSIONS.HIERARCHY_WRITE) as a
   return c.json({ success: true, data: created, error: null });
 });
 
-// Sales Areas
+// Sales Areas - Filtered by Scope
 hierarchy.get('/sales-areas', async (c: AppContext) => {
   const divisionId = c.req.query('divisionId');
   const db = getDb(c.env.DB);
   const repo = new HierarchyRepository(db);
-  const salesAreas = await repo.listSalesAreas(divisionId);
+  const allSalesAreas = await repo.listSalesAreas(divisionId);
+
+  if (c.var.user.isGlobalScope) {
+    return c.json({ success: true, data: allSalesAreas, error: null });
+  }
+
+  const filtered = [];
+  for (const sa of allSalesAreas) {
+    if (await ScopeService.canAccessSalesArea(c.var.user, sa.id, repo)) {
+      filtered.push(sa);
+    }
+  }
 
   return c.json({
     success: true,
-    data: salesAreas,
+    data: filtered,
     error: null,
   });
 });
@@ -159,6 +201,10 @@ hierarchy.post('/sales-areas', requirePermission(PERMISSIONS.HIERARCHY_WRITE) as
   const db = getDb(c.env.DB);
   const repo = new HierarchyRepository(db);
   const auditRepo = new AuditRepository(db);
+
+  if (!await ScopeService.canAccessDivision(c.var.user, parseResult.data.divisionId, repo)) {
+    return c.json({ success: false, data: null, error: { code: 'FORBIDDEN', message: 'Cannot register Sales Area outside your assigned Divisional Office.' } }, 403);
+  }
 
   const parentDiv = await repo.findDivisionById(parseResult.data.divisionId);
   if (!parentDiv) {

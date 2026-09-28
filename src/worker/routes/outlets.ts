@@ -102,6 +102,14 @@ outlets.post('/', requirePermission(PERMISSIONS.OUTLETS_CREATE) as any, async (c
     }, 400);
   }
 
+  if (!await ScopeService.canAccessSalesArea(c.var.user, payload.salesAreaId, hierarchyRepo)) {
+    return c.json({
+      success: false,
+      data: null,
+      error: { code: 'FORBIDDEN', message: 'Cannot register outlet outside your assigned Sales Area.' },
+    }, 403);
+  }
+
   const nowIso = new Date().toISOString();
   const created = await outletRepo.createOutlet({
     id: `ro-${crypto.randomUUID()}`,

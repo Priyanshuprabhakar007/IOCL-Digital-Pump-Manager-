@@ -6,7 +6,11 @@
   "scripts": {
     "dev": "tsx server.ts",
     "build": "vite build",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit",
+    "db:migrate:local": "wrangler d1 migrations apply iocl-pump-manager-d1 --local",
+    "db:migrate:remote": "wrangler d1 migrations apply iocl-pump-manager-d1 --remote",
+    "db:seed:local": "tsx src/db/runSeed.ts",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit"
@@ -44,6 +48,8 @@
     "esbuild": "^0.25.0",
     "tailwindcss": "^4.3.3",
     "tsx": "^4.21.0",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.2",
+    "wrangler": "^4.142.0"
   }
 }

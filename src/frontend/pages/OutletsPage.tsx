@@ -18,7 +18,7 @@ export const OutletsPage: React.FC = () => {
   const [form, setForm] = useState({
     roCode: '',
     name: '',
-    outletType: 'COCO' as 'COCO' | 'DOCO' | 'DODO',
+    outletType: 'COCO' as 'COCO' | 'CODO' | 'A_SITE',
     stateId: 'state-wb',
     divisionId: 'div-kol',
     salesAreaId: 'sa-cen',
@@ -254,8 +254,8 @@ export const OutletsPage: React.FC = () => {
                     className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-white"
                   >
                     <option value="COCO">COCO (Company Owned)</option>
-                    <option value="DOCO">DOCO (Dealer Owned)</option>
-                    <option value="DODO">DODO (Dealer Operated)</option>
+                    <option value="CODO">CODO (Company Owned Dealer Operated)</option>
+                    <option value="A_SITE">A-Site (A-Site Franchisee)</option>
                   </select>
                 </div>
               </div>

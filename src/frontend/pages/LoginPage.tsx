@@ -124,45 +124,47 @@ export const LoginPage: React.FC = () => {
           </div>
         </div>
 
-        {/* Right Column: 1-Click Demo Accounts Picker */}
-        <div className="lg:col-span-6 space-y-4">
-          <div className="flex items-center gap-2 text-xs font-bold text-orange-400 uppercase tracking-wider font-mono">
-            <Sparkles className="w-4 h-4" />
-            <span>1-Click Phase 1A Role Testing</span>
-          </div>
+        {/* Right Column: 1-Click Demo Accounts Picker (Development Mode Only) */}
+        {import.meta.env.DEV && (
+          <div className="lg:col-span-6 space-y-4">
+            <div className="flex items-center gap-2 text-xs font-bold text-orange-400 uppercase tracking-wider font-mono">
+              <Sparkles className="w-4 h-4" />
+              <span>1-Click Phase 1A Role Testing (Development Mode)</span>
+            </div>
 
-          <div className="space-y-2.5">
-            {demoAccounts.map(demo => (
-              <button
-                key={demo.email}
-                onClick={() => handleDemoClick(demo.email)}
-                disabled={loading}
-                className="w-full text-left p-3.5 bg-slate-900/90 hover:bg-slate-800 border border-slate-800 hover:border-orange-500/50 rounded-xl transition-all group flex items-start justify-between gap-3 shadow-md"
-              >
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-bold text-white group-hover:text-orange-400 transition-colors">
-                      {demo.title}
-                    </span>
-                    <span className="px-2 py-0.5 rounded text-[10px] font-mono font-semibold bg-slate-800 text-slate-300 border border-slate-700">
-                      {demo.scope}
-                    </span>
+            <div className="space-y-2.5">
+              {demoAccounts.map(demo => (
+                <button
+                  key={demo.email}
+                  onClick={() => handleDemoClick(demo.email)}
+                  disabled={loading}
+                  className="w-full text-left p-3.5 bg-slate-900/90 hover:bg-slate-800 border border-slate-800 hover:border-orange-500/50 rounded-xl transition-all group flex items-start justify-between gap-3 shadow-md"
+                >
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold text-white group-hover:text-orange-400 transition-colors">
+                        {demo.title}
+                      </span>
+                      <span className="px-2 py-0.5 rounded text-[10px] font-mono font-semibold bg-slate-800 text-slate-300 border border-slate-700">
+                        {demo.scope}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-400 mt-1 line-clamp-1">
+                      {demo.desc}
+                    </p>
+                    <div className="text-[10px] text-slate-500 font-mono mt-1">
+                      {demo.email} • Password: <span className="text-slate-400">Password@123</span>
+                    </div>
                   </div>
-                  <p className="text-[11px] text-slate-400 mt-1 line-clamp-1">
-                    {demo.desc}
-                  </p>
-                  <div className="text-[10px] text-slate-500 font-mono mt-1">
-                    {demo.email} • Password: <span className="text-slate-400">Password@123</span>
-                  </div>
-                </div>
 
-                <div className="p-1.5 rounded-lg bg-slate-800 group-hover:bg-orange-500 text-slate-400 group-hover:text-white transition-colors shrink-0">
-                  <ArrowRight className="w-3.5 h-3.5" />
-                </div>
-              </button>
-            ))}
+                  <div className="p-1.5 rounded-lg bg-slate-800 group-hover:bg-orange-500 text-slate-400 group-hover:text-white transition-colors shrink-0">
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </div>
+                </button>
+              ))}
+            </div>
           </div>
-        </div>
+        )}
 
       </div>
     </div>

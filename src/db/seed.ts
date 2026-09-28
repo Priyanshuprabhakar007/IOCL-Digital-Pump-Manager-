@@ -62,6 +62,10 @@ export async function seedDatabase(db: AppDatabase) {
     'perm-s-r', 'perm-d-r', 'perm-d-w', 'perm-a-r'
   ].map(pId => ({ roleId: 'role-do', permissionId: pId }));
 
+  const bmPerms = [
+    'perm-u-r', 'perm-h-r', 'perm-o-r', 'perm-s-r', 'perm-d-r', 'perm-a-r'
+  ].map(pId => ({ roleId: 'role-bm', permissionId: pId }));
+
   const fieldOfficerPerms = [
     'perm-h-r', 'perm-o-r', 'perm-o-u', 'perm-d-r', 'perm-d-w'
   ].map(pId => ({ roleId: 'role-fo', permissionId: pId }));
@@ -78,6 +82,7 @@ export async function seedDatabase(db: AppDatabase) {
     ...adminRolePerms,
     ...stateOfficePerms,
     ...divOfficePerms,
+    ...bmPerms,
     ...fieldOfficerPerms,
     ...dealerPerms,
     ...cspPerms,
@@ -85,14 +90,17 @@ export async function seedDatabase(db: AppDatabase) {
 
   // 4. Hierarchy (State -> Division -> Sales Area)
   const stateWb = { id: 'state-wb', code: 'WBSO', name: 'West Bengal State Office', status: 'ACTIVE' as const, createdAt: now, updatedAt: now };
-  await db.insert(schema.states).values(stateWb);
+  const statePb = { id: 'state-pb', code: 'PPSO', name: 'Punjab State Office', status: 'ACTIVE' as const, createdAt: now, updatedAt: now };
+  await db.insert(schema.states).values([stateWb, statePb]);
 
   const divKolkata = { id: 'div-kol', stateId: 'state-wb', code: 'KOL-DO', name: 'Kolkata Divisional Office', status: 'ACTIVE' as const, createdAt: now, updatedAt: now };
-  await db.insert(schema.divisions).values(divKolkata);
+  const divLudhiana = { id: 'div-ldh', stateId: 'state-pb', code: 'LDH-DO', name: 'Ludhiana Divisional Office', status: 'ACTIVE' as const, createdAt: now, updatedAt: now };
+  await db.insert(schema.divisions).values([divKolkata, divLudhiana]);
 
   const saCentral = { id: 'sa-cen', divisionId: 'div-kol', code: 'KOL-CEN-SA', name: 'Kolkata Central Sales Area', status: 'ACTIVE' as const, createdAt: now, updatedAt: now };
   const saNorth = { id: 'sa-nor', divisionId: 'div-kol', code: 'KOL-NOR-SA', name: 'Kolkata North Sales Area', status: 'ACTIVE' as const, createdAt: now, updatedAt: now };
-  await db.insert(schema.salesAreas).values([saCentral, saNorth]);
+  const saLdhCentral = { id: 'sa-ldh-cen', divisionId: 'div-ldh', code: 'LDH-CEN-SA', name: 'Ludhiana Central Sales Area', status: 'ACTIVE' as const, createdAt: now, updatedAt: now };
+  await db.insert(schema.salesAreas).values([saCentral, saNorth, saLdhCentral]);
 
   // 5. Retail Outlets
   const outlet1 = {
@@ -118,7 +126,7 @@ export async function seedDatabase(db: AppDatabase) {
     id: 'ro-1002',
     roCode: 'RO-110024',
     name: 'Salt Lake City Sector V Retail Outlet',
-    outletType: 'DOCO' as const,
+    outletType: 'CODO' as const,
     stateId: 'state-wb',
     divisionId: 'div-kol',
     salesAreaId: 'sa-nor',
@@ -133,23 +141,44 @@ export async function seedDatabase(db: AppDatabase) {
     updatedAt: now,
   };
 
-  await db.insert(schema.retailOutlets).values([outlet1, outlet2]);
+  const outlet3 = {
+    id: 'ro-1003',
+    roCode: 'RO-110025',
+    name: 'GT Road Ludhiana Fuel Outlet',
+    outletType: 'A_SITE' as const,
+    stateId: 'state-pb',
+    divisionId: 'div-ldh',
+    salesAreaId: 'sa-ldh-cen',
+    address: '100 GT Road, Miller Ganj',
+    city: 'Ludhiana',
+    district: 'Ludhiana',
+    pincode: '141003',
+    latitude: 30.9010,
+    longitude: 75.8573,
+    status: 'ACTIVE' as const,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  await db.insert(schema.retailOutlets).values([outlet1, outlet2, outlet3]);
 
   // 6. Demo Users
   const userAdmin = { id: 'user-admin', empCode: 'IOCL-ADM-001', name: 'Rajesh Sharma', email: 'admin@iocl.in', phone: '9830000001', passwordHash, status: 'ACTIVE' as const, createdAt: now, updatedAt: now };
   const userSO = { id: 'user-so', empCode: 'IOCL-SO-001', name: 'Ananya Roy', email: 'wbso@iocl.in', phone: '9830000002', passwordHash, status: 'ACTIVE' as const, createdAt: now, updatedAt: now };
   const userDO = { id: 'user-do', empCode: 'IOCL-DO-001', name: 'Vikram Banerjee', email: 'kolkatado@iocl.in', phone: '9830000003', passwordHash, status: 'ACTIVE' as const, createdAt: now, updatedAt: now };
+  const userBM = { id: 'user-bm', empCode: 'IOCL-BM-001', name: 'Ramesh Krishnan', email: 'bm.kolkata@iocl.in', phone: '9830000007', passwordHash, status: 'ACTIVE' as const, createdAt: now, updatedAt: now };
   const userFO = { id: 'user-fo', empCode: 'IOCL-FO-001', name: 'Subhashish Das', email: 'fo.central@iocl.in', phone: '9830000004', passwordHash, status: 'ACTIVE' as const, createdAt: now, updatedAt: now };
   const userDealer = { id: 'user-dealer', empCode: 'IOCL-DLR-001', name: 'Pritam Mukherjee', email: 'dealer.parkstreet@iocl.in', phone: '9830000005', passwordHash, status: 'ACTIVE' as const, createdAt: now, updatedAt: now };
   const userCSP = { id: 'user-csp', empCode: 'IOCL-CSP-001', name: 'Rahul Sen', email: 'csp.parkstreet@iocl.in', phone: '9830000006', passwordHash, status: 'ACTIVE' as const, createdAt: now, updatedAt: now };
 
-  await db.insert(schema.users).values([userAdmin, userSO, userDO, userFO, userDealer, userCSP]);
+  await db.insert(schema.users).values([userAdmin, userSO, userDO, userBM, userFO, userDealer, userCSP]);
 
   // 7. Assign User Roles
   await db.insert(schema.userRoles).values([
     { userId: 'user-admin', roleId: 'role-admin' },
     { userId: 'user-so', roleId: 'role-so' },
     { userId: 'user-do', roleId: 'role-do' },
+    { userId: 'user-bm', roleId: 'role-bm' },
     { userId: 'user-fo', roleId: 'role-fo' },
     { userId: 'user-dealer', roleId: 'role-dealer' },
     { userId: 'user-csp', roleId: 'role-csp' },
@@ -157,18 +186,20 @@ export async function seedDatabase(db: AppDatabase) {
 
   // 8. Assign User Scopes
   await db.insert(schema.userScopeAssignments).values([
-    // Admin: GLOBAL
+    // Admin: Explicit GLOBAL scope
     { id: 'scope-admin', userId: 'user-admin', scopeLevel: 'GLOBAL', stateId: null, divisionId: null, salesAreaId: null, outletId: null, createdAt: now, createdBy: 'SYSTEM' },
     // State Office: STATE (WBSO)
     { id: 'scope-so', userId: 'user-so', scopeLevel: 'STATE', stateId: 'state-wb', divisionId: null, salesAreaId: null, outletId: null, createdAt: now, createdBy: 'SYSTEM' },
     // Divisional Office: DIVISION (Kolkata DO)
-    { id: 'scope-do', userId: 'user-do', scopeLevel: 'DIVISION', stateId: 'state-wb', divisionId: 'div-kol', salesAreaId: null, outletId: null, createdAt: now, createdBy: 'SYSTEM' },
+    { id: 'scope-do', userId: 'user-do', scopeLevel: 'DIVISION', stateId: null, divisionId: 'div-kol', salesAreaId: null, outletId: null, createdAt: now, createdBy: 'SYSTEM' },
+    // Business Manager: DIVISION (Kolkata DO)
+    { id: 'scope-bm', userId: 'user-bm', scopeLevel: 'DIVISION', stateId: null, divisionId: 'div-kol', salesAreaId: null, outletId: null, createdAt: now, createdBy: 'SYSTEM' },
     // Field Officer: SALES_AREA (Kolkata Central SA)
-    { id: 'scope-fo', userId: 'user-fo', scopeLevel: 'SALES_AREA', stateId: 'state-wb', divisionId: 'div-kol', salesAreaId: 'sa-cen', outletId: null, createdAt: now, createdBy: 'SYSTEM' },
+    { id: 'scope-fo', userId: 'user-fo', scopeLevel: 'SALES_AREA', stateId: null, divisionId: null, salesAreaId: 'sa-cen', outletId: null, createdAt: now, createdBy: 'SYSTEM' },
     // Dealer: OUTLET (Park Street Outlet RO-110023)
-    { id: 'scope-dealer', userId: 'user-dealer', scopeLevel: 'OUTLET', stateId: 'state-wb', divisionId: 'div-kol', salesAreaId: 'sa-cen', outletId: 'ro-1001', createdAt: now, createdBy: 'SYSTEM' },
+    { id: 'scope-dealer', userId: 'user-dealer', scopeLevel: 'OUTLET', stateId: null, divisionId: null, salesAreaId: null, outletId: 'ro-1001', createdAt: now, createdBy: 'SYSTEM' },
     // CSP: OUTLET (Park Street Outlet RO-110023)
-    { id: 'scope-csp', userId: 'user-csp', scopeLevel: 'OUTLET', stateId: 'state-wb', divisionId: 'div-kol', salesAreaId: 'sa-cen', outletId: 'ro-1001', createdAt: now, createdBy: 'SYSTEM' },
+    { id: 'scope-csp', userId: 'user-csp', scopeLevel: 'OUTLET', stateId: null, divisionId: null, salesAreaId: null, outletId: 'ro-1001', createdAt: now, createdBy: 'SYSTEM' },
   ]);
 
   // 9. Outlet User Assignments

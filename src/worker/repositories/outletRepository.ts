@@ -151,7 +151,7 @@ export class OutletRepository {
     id: string;
     roCode: string;
     name: string;
-    outletType: 'COCO' | 'DOCO' | 'DODO';
+    outletType: 'COCO' | 'CODO' | 'A_SITE';
     stateId: string;
     divisionId: string;
     salesAreaId: string;
@@ -191,7 +191,7 @@ export class OutletRepository {
 
   async updateOutlet(id: string, data: Partial<{
     name: string;
-    outletType: 'COCO' | 'DOCO' | 'DODO';
+    outletType: 'COCO' | 'CODO' | 'A_SITE';
     address: string;
     city: string;
     district: string;

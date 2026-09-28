@@ -83,7 +83,7 @@ export const retailOutlets = sqliteTable('retail_outlets', {
   id: text('id').primaryKey(),
   roCode: text('ro_code').notNull().unique(),
   name: text('name').notNull(),
-  outletType: text('outlet_type', { enum: ['COCO', 'DOCO', 'DODO'] }).notNull(),
+  outletType: text('outlet_type', { enum: ['COCO', 'CODO', 'A_SITE'] }).notNull(),
   stateId: text('state_id').notNull().references(() => states.id),
   divisionId: text('division_id').notNull().references(() => divisions.id),
   salesAreaId: text('sales_area_id').notNull().references(() => salesAreas.id),

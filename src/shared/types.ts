@@ -64,7 +64,7 @@ export interface RetailOutlet {
   id: string;
   roCode: string;
   name: string;
-  outletType: 'COCO' | 'DOCO' | 'DODO';
+  outletType: 'COCO' | 'CODO' | 'A_SITE';
   stateId: string;
   divisionId: string;
   salesAreaId: string;
@@ -163,6 +163,7 @@ export interface UserContext {
   permissions: PermissionCode[];
   scopes: UserScopeAssignment[];
   primaryScope: ScopeLevel;
+  isGlobalScope: boolean;
   accessibleStateIds: string[];
   accessibleDivisionIds: string[];
   accessibleSalesAreaIds: string[];

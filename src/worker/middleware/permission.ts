@@ -13,7 +13,7 @@ export function requirePermission(permissionCode: PermissionCode) {
       }, 401);
     }
 
-    if (userCtx.isGlobalAdmin || userCtx.permissions.includes(permissionCode)) {
+    if (userCtx.roles.includes('ADMIN') || userCtx.permissions.includes(permissionCode)) {
       await next();
       return;
     }
@@ -40,7 +40,7 @@ export function requireRole(roleCode: string) {
       }, 401);
     }
 
-    if (userCtx.isGlobalAdmin || userCtx.roles.includes(roleCode as any)) {
+    if (userCtx.roles.includes('ADMIN') || userCtx.roles.includes(roleCode as any)) {
       await next();
       return;
     }

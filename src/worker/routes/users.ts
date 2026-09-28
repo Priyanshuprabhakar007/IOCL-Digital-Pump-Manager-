@@ -21,7 +21,6 @@ users.get('/', requirePermission(PERMISSIONS.USERS_READ) as any, async (c: AppCo
 
   const accessibleUsers = await ScopeService.getAccessibleUsers(c.var.user, userRepo, scopeRepo);
 
-  // Attach roles & scope summarize to each user
   const userListWithRoles = await Promise.all(
     accessibleUsers.map(async (u) => {
       const roles = await userRepo.getUserRoles(u.id);
@@ -61,6 +60,16 @@ users.post('/', requirePermission(PERMISSIONS.USERS_CREATE) as any, async (c: Ap
   const db = getDb(c.env.DB);
   const userRepo = new UserRepository(db);
   const auditRepo = new AuditRepository(db);
+
+  // Role Ceiling Check
+  const roleCheck = ScopeService.validateRoleCeiling(c.var.user, payload.roleCodes);
+  if (!roleCheck.allowed) {
+    return c.json({
+      success: false,
+      data: null,
+      error: { code: 'ROLE_CEILING_EXCEEDED', message: roleCheck.message || 'Cannot grant roles higher than your administrative level.' },
+    }, 403);
+  }
 
   const existingEmail = await userRepo.findByEmail(payload.email);
   if (existingEmail) {
@@ -112,6 +121,16 @@ users.patch('/:id/status', requirePermission(PERMISSIONS.USERS_UPDATE) as any, a
   if (!targetUserId) {
     return c.json({ success: false, data: null, error: { code: 'BAD_REQUEST', message: 'User ID required' } }, 400);
   }
+
+  // Self status update prevention
+  if (targetUserId === c.var.user.user.id) {
+    return c.json({
+      success: false,
+      data: null,
+      error: { code: 'FORBIDDEN', message: 'You cannot change your own account status.' },
+    }, 403);
+  }
+
   const body = await c.req.json().catch(() => ({}));
   const parseResult = UserStatusSchema.safeParse(body);
 
@@ -129,7 +148,18 @@ users.patch('/:id/status', requirePermission(PERMISSIONS.USERS_UPDATE) as any, a
 
   const db = getDb(c.env.DB);
   const userRepo = new UserRepository(db);
+  const scopeRepo = new ScopeRepository(db);
   const auditRepo = new AuditRepository(db);
+
+  // Scope check: Actor must have authority to manage target user
+  const canManage = await ScopeService.canManageUser(c.var.user, targetUserId, userRepo, scopeRepo);
+  if (!canManage) {
+    return c.json({
+      success: false,
+      data: null,
+      error: { code: 'FORBIDDEN', message: 'Target user is outside your authorized organizational scope.' },
+    }, 403);
+  }
 
   const existing = await userRepo.findById(targetUserId);
   if (!existing) {

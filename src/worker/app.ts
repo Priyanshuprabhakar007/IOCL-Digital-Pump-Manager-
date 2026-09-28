@@ -11,31 +11,26 @@ import scopeRoutes from './routes/scopes';
 import auditLogRoutes from './routes/auditLogs';
 import documentRoutes from './routes/documents';
 
-import { getDb } from '../db';
-import { seedDatabase } from '../db/seed';
-
 export const app = new Hono<{ Bindings: EnvBindings }>();
 
-// Global CORS
+// Configured Origin Validation
+const allowedOrigins = [
+  'http://localhost:3000',
+  'http://127.0.0.1:3000',
+];
+
 app.use('*', cors({
-  origin: (origin) => origin || '*',
+  origin: (origin) => {
+    if (!origin) return '*';
+    if (allowedOrigins.includes(origin) || origin.endsWith('.run.app') || origin.endsWith('.workers.dev')) {
+      return origin;
+    }
+    return 'http://localhost:3000';
+  },
   credentials: true,
   allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowHeaders: ['Content-Type', 'Authorization', 'Cookie'],
 }));
-
-// Automatic Seeder Execution check on startup
-app.use('*', async (c, next) => {
-  if (c.env?.DB) {
-    try {
-      const db = getDb(c.env.DB);
-      await seedDatabase(db);
-    } catch (e) {
-      // Ignore if table/schema already exists or seeding is complete
-    }
-  }
-  await next();
-});
 
 // Health check endpoint
 app.get('/api/health', (c) => {
@@ -56,15 +51,15 @@ app.route('/api/v1/scopes', scopeRoutes);
 app.route('/api/v1/audit-logs', auditLogRoutes);
 app.route('/api/v1/documents', documentRoutes);
 
-// Global Error Handler
+// Global Error Handler - Generic external response, detailed internal server log
 app.onError((err, c) => {
-  console.error('[Worker Error]:', err);
+  console.error('[Worker Server Error]:', err);
   return c.json({
     success: false,
     data: null,
     error: {
       code: 'INTERNAL_SERVER_ERROR',
-      message: err.message || 'An unexpected server error occurred.',
+      message: 'An unexpected server error occurred. Please contact system administrator.',
     },
   }, 500);
 });

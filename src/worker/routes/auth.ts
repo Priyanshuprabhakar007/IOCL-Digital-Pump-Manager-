@@ -12,7 +12,30 @@ import { COOKIE_NAME, SESSION_DURATION_HOURS } from '../../shared/constants';
 
 const auth = new Hono<{ Bindings: EnvBindings }>();
 
+// Simple in-memory rate limiter for login protection
+const failedLoginAttempts = new Map<string, { count: number; resetAt: number }>();
+
 auth.post('/login', async (c) => {
+  const ipAddress = c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for') || '127.0.0.1';
+  const nowMs = Date.now();
+
+  // Check rate limit
+  const rateLimitKey = `login:${ipAddress}`;
+  const record = failedLoginAttempts.get(rateLimitKey);
+  if (record) {
+    if (nowMs < record.resetAt) {
+      if (record.count >= 5) {
+        return c.json({
+          success: false,
+          data: null,
+          error: { code: 'TOO_MANY_REQUESTS', message: 'Too many failed login attempts. Please try again in 5 minutes.' },
+        }, 429);
+      }
+    } else {
+      failedLoginAttempts.delete(rateLimitKey);
+    }
+  }
+
   const body = await c.req.json().catch(() => ({}));
   const parseResult = LoginSchema.safeParse(body);
 
@@ -36,7 +59,16 @@ auth.post('/login', async (c) => {
   const auditRepo = new AuditRepository(db);
 
   const authUser = await userRepo.findPasswordHashByEmail(email);
+
+  const trackFailedAttempt = () => {
+    const cur = failedLoginAttempts.get(rateLimitKey) || { count: 0, resetAt: nowMs + 5 * 60 * 1000 };
+    cur.count += 1;
+    failedLoginAttempts.set(rateLimitKey, cur);
+  };
+
+  // Do not disclose whether email exists or account is disabled specifically
   if (!authUser) {
+    trackFailedAttempt();
     return c.json({
       success: false,
       data: null,
@@ -45,21 +77,26 @@ auth.post('/login', async (c) => {
   }
 
   if (authUser.user.status !== 'ACTIVE') {
+    trackFailedAttempt();
     return c.json({
       success: false,
       data: null,
-      error: { code: 'ACCOUNT_DISABLED', message: `Account is ${authUser.user.status.toLowerCase()}. Please contact administrator.` },
+      error: { code: 'ACCOUNT_DISABLED', message: 'Account is inactive or disabled. Please contact administrator.' },
     }, 403);
   }
 
   const passwordValid = bcrypt.compareSync(password, authUser.passwordHash);
   if (!passwordValid) {
+    trackFailedAttempt();
     return c.json({
       success: false,
       data: null,
       error: { code: 'INVALID_CREDENTIALS', message: 'Invalid email or password.' },
     }, 401);
   }
+
+  // Successful login -> clear rate limit record
+  failedLoginAttempts.delete(rateLimitKey);
 
   // Create Session
   const rawToken = crypto.randomUUID() + '-' + crypto.randomUUID();
@@ -69,7 +106,6 @@ auth.post('/login', async (c) => {
   const expiresAt = new Date(now.getTime() + SESSION_DURATION_HOURS * 60 * 60 * 1000).toISOString();
   const nowIso = now.toISOString();
 
-  const ipAddress = c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for') || null;
   const userAgent = c.req.header('user-agent') || null;
 
   await sessionRepo.createSession({

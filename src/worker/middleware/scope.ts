@@ -15,7 +15,11 @@ export function requireOutletAccess(paramName = 'id') {
       }, 401);
     }
 
-    const outletId = c.req.param(paramName);
+    const paramVal = c.req.param(paramName);
+    const pathParts = c.req.path.split('/').filter(Boolean);
+    const pathVal = pathParts[pathParts.length - 1];
+    const outletId = paramVal || (pathVal !== 'outlets' ? pathVal : undefined);
+
     if (!outletId) {
       return c.json({
         success: false,

@@ -76,42 +76,44 @@ export const Header: React.FC<HeaderProps> = ({ onToggleMobileSidebar }) => {
             <span>SCOPE: {userCtx.primaryScope}</span>
           </div>
 
-          {/* Demo User Switcher Dropdown */}
-          <div className="relative">
-            <button
-              onClick={() => setDemoDropdownOpen(!demoDropdownOpen)}
-              disabled={switching}
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-medium text-slate-200 transition-colors"
-              title="Quickly test different roles & scope boundaries"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 text-orange-400 ${switching ? 'animate-spin' : ''}`} />
-              <span className="hidden sm:inline">Role Switcher</span>
-              <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
-            </button>
+          {/* Demo User Switcher Dropdown (Development Only) */}
+          {import.meta.env.DEV && (
+            <div className="relative">
+              <button
+                onClick={() => setDemoDropdownOpen(!demoDropdownOpen)}
+                disabled={switching}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-medium text-slate-200 transition-colors"
+                title="Quickly test different roles & scope boundaries"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 text-orange-400 ${switching ? 'animate-spin' : ''}`} />
+                <span className="hidden sm:inline">Role Switcher</span>
+                <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
+              </button>
 
-            {demoDropdownOpen && (
-              <div className="absolute right-0 mt-2 w-72 rounded-lg bg-slate-800 border border-slate-700 shadow-xl py-1.5 z-50 text-xs">
-                <div className="px-3 py-1.5 text-[11px] font-semibold text-slate-400 uppercase tracking-wider border-b border-slate-700/60 mb-1">
-                  Test Role & Scope Switching
+              {demoDropdownOpen && (
+                <div className="absolute right-0 mt-2 w-72 rounded-lg bg-slate-800 border border-slate-700 shadow-xl py-1.5 z-50 text-xs">
+                  <div className="px-3 py-1.5 text-[11px] font-semibold text-slate-400 uppercase tracking-wider border-b border-slate-700/60 mb-1">
+                    Test Role & Scope Switching
+                  </div>
+                  {demoAccounts.map(acc => (
+                    <button
+                      key={acc.email}
+                      onClick={() => handleSwitch(acc.email)}
+                      className={`w-full text-left px-3 py-2 hover:bg-slate-700/70 flex items-center justify-between transition-colors ${userCtx.user.email === acc.email ? 'bg-orange-500/10 text-orange-400 font-semibold' : 'text-slate-200'}`}
+                    >
+                      <div>
+                        <div className="font-medium">{acc.label}</div>
+                        <div className="text-[10px] text-slate-400 font-mono">{acc.email}</div>
+                      </div>
+                      {userCtx.user.email === acc.email && (
+                        <span className="w-2 h-2 rounded-full bg-orange-500" />
+                      )}
+                    </button>
+                  ))}
                 </div>
-                {demoAccounts.map(acc => (
-                  <button
-                    key={acc.email}
-                    onClick={() => handleSwitch(acc.email)}
-                    className={`w-full text-left px-3 py-2 hover:bg-slate-700/70 flex items-center justify-between transition-colors ${userCtx.user.email === acc.email ? 'bg-orange-500/10 text-orange-400 font-semibold' : 'text-slate-200'}`}
-                  >
-                    <div>
-                      <div className="font-medium">{acc.label}</div>
-                      <div className="text-[10px] text-slate-400 font-mono">{acc.email}</div>
-                    </div>
-                    {userCtx.user.email === acc.email && (
-                      <span className="w-2 h-2 rounded-full bg-orange-500" />
-                    )}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
+              )}
+            </div>
+          )}
 
           {/* Active User Badge & Logout */}
           <div className="flex items-center gap-2 pl-2 border-l border-slate-800">

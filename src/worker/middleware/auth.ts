@@ -64,18 +64,23 @@ export async function requireAuth(c: AppContext, next: Next) {
     }, 401);
   }
 
-  // Update session last seen timestamp
-  c.executionCtx?.waitUntil(sessionRepo.updateLastSeen(session.id, nowIso));
+  // Session write optimization: throttle last_seen_at write to D1 (only if >15 mins old)
+  const lastSeenMs = new Date(session.lastSeenAt).getTime();
+  const nowMs = new Date(nowIso).getTime();
+  if (nowMs - lastSeenMs > 15 * 60 * 1000) {
+    c.executionCtx?.waitUntil(sessionRepo.updateLastSeen(session.id, nowIso));
+  }
 
   const roles = await userRepo.getUserRoles(user.id);
   const permissions = await userRepo.getUserPermissions(user.id);
   const scopes = await scopeRepo.getUserScopes(user.id);
 
-  // Determine Primary Scope Level & Access Lists
-  const isGlobalAdmin = roles.includes('ADMIN');
+  // Global scope requires an explicit GLOBAL scope assignment record!
+  const isGlobalScope = scopes.some(s => s.scopeLevel === 'GLOBAL');
+  const isGlobalAdmin = roles.includes('ADMIN') && isGlobalScope;
 
   let primaryScope: ScopeLevel = 'OUTLET';
-  if (isGlobalAdmin || scopes.some(s => s.scopeLevel === 'GLOBAL')) {
+  if (isGlobalScope) {
     primaryScope = 'GLOBAL';
   } else if (scopes.some(s => s.scopeLevel === 'STATE')) {
     primaryScope = 'STATE';
@@ -85,10 +90,23 @@ export async function requireAuth(c: AppContext, next: Next) {
     primaryScope = 'SALES_AREA';
   }
 
-  const accessibleStateIds = scopes.map(s => s.stateId).filter((id): id is string => Boolean(id));
-  const accessibleDivisionIds = scopes.map(s => s.divisionId).filter((id): id is string => Boolean(id));
-  const accessibleSalesAreaIds = scopes.map(s => s.salesAreaId).filter((id): id is string => Boolean(id));
-  const accessibleOutletIds = scopes.map(s => s.outletId).filter((id): id is string => Boolean(id));
+  // STRICT REQUIREMENT #2: Do not infer broad access from IDs stored in narrower scope records!
+  // Collect target IDs ONLY from records corresponding to that specific scope level.
+  const accessibleStateIds = scopes
+    .filter(s => s.scopeLevel === 'STATE' && s.stateId)
+    .map(s => s.stateId as string);
+
+  const accessibleDivisionIds = scopes
+    .filter(s => s.scopeLevel === 'DIVISION' && s.divisionId)
+    .map(s => s.divisionId as string);
+
+  const accessibleSalesAreaIds = scopes
+    .filter(s => s.scopeLevel === 'SALES_AREA' && s.salesAreaId)
+    .map(s => s.salesAreaId as string);
+
+  const accessibleOutletIds = scopes
+    .filter(s => s.scopeLevel === 'OUTLET' && s.outletId)
+    .map(s => s.outletId as string);
 
   const userContext: UserContext = {
     user,
@@ -96,6 +114,7 @@ export async function requireAuth(c: AppContext, next: Next) {
     permissions,
     scopes,
     primaryScope,
+    isGlobalScope,
     accessibleStateIds,
     accessibleDivisionIds,
     accessibleSalesAreaIds,
