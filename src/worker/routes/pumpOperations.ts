@@ -34,7 +34,7 @@ async function verifyOutletAuthority(c: AppContext, outletId: string, outletRepo
 // ==========================================
 
 // GET /api/v1/outlets/:outletId/products
-pumpOperations.get('/outlets/:outletId/products', requirePermission(PERMISSIONS.PRODUCTS_READ) as any, async (c: AppContext) => {
+pumpOperations.get('/outlets/:outletId/products', requirePermission(PERMISSIONS.OUTLET_PRODUCTS_READ) as any, async (c: AppContext) => {
   const outletId = c.req.param('outletId');
   if (!outletId) return c.json({ success: false, data: null, error: { code: 'BAD_REQUEST', message: 'outletId is required' } }, 400);
 
@@ -51,7 +51,7 @@ pumpOperations.get('/outlets/:outletId/products', requirePermission(PERMISSIONS.
 });
 
 // POST /api/v1/outlets/:outletId/products
-pumpOperations.post('/outlets/:outletId/products', requirePermission(PERMISSIONS.PRODUCTS_WRITE) as any, async (c: AppContext) => {
+pumpOperations.post('/outlets/:outletId/products', requirePermission(PERMISSIONS.OUTLET_PRODUCTS_WRITE) as any, async (c: AppContext) => {
   const outletId = c.req.param('outletId');
   if (!outletId) return c.json({ success: false, data: null, error: { code: 'BAD_REQUEST', message: 'outletId is required' } }, 400);
 
@@ -110,7 +110,7 @@ pumpOperations.post('/outlets/:outletId/products', requirePermission(PERMISSIONS
 });
 
 // PATCH /api/v1/outlets/:outletId/products/:productId/status
-pumpOperations.patch('/outlets/:outletId/products/:productId/status', requirePermission(PERMISSIONS.PRODUCTS_WRITE) as any, async (c: AppContext) => {
+pumpOperations.patch('/outlets/:outletId/products/:productId/status', requirePermission(PERMISSIONS.OUTLET_PRODUCTS_WRITE) as any, async (c: AppContext) => {
   const outletId = c.req.param('outletId');
   const productId = c.req.param('productId');
   if (!outletId || !productId) return c.json({ success: false, data: null, error: { code: 'BAD_REQUEST', message: 'outletId and productId are required' } }, 400);
@@ -133,6 +133,21 @@ pumpOperations.patch('/outlets/:outletId/products/:productId/status', requirePer
   const existing = await pumpRepo.findOutletProduct(outletId, productId);
   if (!existing) {
     return c.json({ success: false, data: null, error: { code: 'NOT_FOUND', message: 'Outlet product mapping not found' } }, 404);
+  }
+
+  // Phase 2A Hardening: If deactivating, check active tanks/nozzles
+  if (status === 'INACTIVE') {
+    const activeDependents = await pumpRepo.findActiveTanksAndNozzlesForOutletProduct(outletId, productId);
+    if (activeDependents.tanksCount > 0 || activeDependents.nozzlesCount > 0) {
+      return c.json({
+        success: false,
+        data: null,
+        error: {
+          code: 'PRODUCT_IN_USE',
+          message: `Cannot deactivate product while ${activeDependents.tanksCount} tank(s) and ${activeDependents.nozzlesCount} nozzle(s) are actively using it at this outlet.`,
+        },
+      }, 409);
+    }
   }
 
   const updated = await pumpRepo.updateOutletProductStatus(outletId, productId, status);
@@ -303,11 +318,23 @@ pumpOperations.put('/tanks/:id', requirePermission(PERMISSIONS.TANKS_WRITE) as a
     return c.json({ success: false, data: null, error: { code: 'VALIDATION_ERROR', message: 'Safe fill capacity cannot exceed total capacity' } }, 400);
   }
 
-  // Validate product mapping if changing product
+  // Phase 2A Hardening: Do not allow changing a tank's product when existing nozzles reference the tank
   if (payload.productId && payload.productId !== tank.productId) {
+    const referencingNozzles = await pumpRepo.findNozzlesReferencingTank(id);
+    if (referencingNozzles.length > 0) {
+      return c.json({
+        success: false,
+        data: null,
+        error: {
+          code: 'TANK_IN_USE',
+          message: `Cannot change tank product because ${referencingNozzles.length} nozzle(s) currently reference this tank.`,
+        },
+      }, 409);
+    }
+
     const op = await pumpRepo.findOutletProduct(tank.outletId, payload.productId);
     if (!op || op.status !== 'ACTIVE') {
-      return c.json({ success: false, data: null, error: { code: 'INVALID_PRODUCT', message: 'Product must be mapped to this outlet' } }, 400);
+      return c.json({ success: false, data: null, error: { code: 'INVALID_PRODUCT', message: 'Product must be mapped and ACTIVE for this outlet' } }, 400);
     }
   }
 
@@ -430,7 +457,7 @@ pumpOperations.post('/outlets/:outletId/dispensers', requirePermission(PERMISSIO
     }, 409);
   }
 
-  // Rule: serial_number should be unique when provided
+  // Rule: serial_number should be unique across all dispensers when provided
   if (payload.serialNumber) {
     const existingSerial = await pumpRepo.findDispenserBySerialNumber(payload.serialNumber);
     if (existingSerial) {
@@ -676,7 +703,7 @@ pumpOperations.post('/dispensers/:dispenserId/nozzles', requirePermission(PERMIS
     }, 409);
   }
 
-  // Rule: Product must be mapped to the outlet
+  // Rule: Product must be mapped to the outlet and ACTIVE
   const outletProduct = await pumpRepo.findOutletProduct(outletId, payload.productId);
   if (!outletProduct || outletProduct.status !== 'ACTIVE') {
     return c.json({
@@ -703,7 +730,7 @@ pumpOperations.post('/dispensers/:dispenserId/nozzles', requirePermission(PERMIS
       data: null,
       error: {
         code: 'PRODUCT_MISMATCH',
-        message: `Tank product (${tank.productName}) does not match nozzle product (${outletProduct.product?.name || payload.productId})`,
+        message: `Tank product does not match nozzle product`,
       },
     }, 400);
   }
@@ -787,6 +814,12 @@ pumpOperations.put('/nozzles/:id', requirePermission(PERMISSIONS.NOZZLES_WRITE) 
   const targetTankId = payload.tankId || nozzle.tankId;
   const targetProductId = payload.productId || nozzle.productId;
 
+  // Validate product is active for outlet
+  const outletProd = await pumpRepo.findOutletProduct(nozzle.outletId, targetProductId);
+  if (!outletProd || outletProd.status !== 'ACTIVE') {
+    return c.json({ success: false, data: null, error: { code: 'INVALID_PRODUCT', message: 'Product must be mapped and ACTIVE for this outlet' } }, 400);
+  }
+
   const tank = await pumpRepo.findTankById(targetTankId);
   if (!tank || tank.outletId !== nozzle.outletId) {
     return c.json({ success: false, data: null, error: { code: 'INVALID_TANK', message: 'Tank not found or belongs to another outlet' } }, 400);
@@ -867,7 +900,7 @@ pumpOperations.patch('/nozzles/:id/status', requirePermission(PERMISSIONS.NOZZLE
 // ==========================================
 
 // GET /api/v1/outlets/:outletId/shift-templates
-pumpOperations.get('/outlets/:outletId/shift-templates', requirePermission(PERMISSIONS.SHIFTS_READ) as any, async (c: AppContext) => {
+pumpOperations.get('/outlets/:outletId/shift-templates', requirePermission(PERMISSIONS.SHIFT_TEMPLATES_READ) as any, async (c: AppContext) => {
   const outletId = c.req.param('outletId');
   if (!outletId) return c.json({ success: false, data: null, error: { code: 'BAD_REQUEST', message: 'outletId is required' } }, 400);
 
@@ -884,7 +917,7 @@ pumpOperations.get('/outlets/:outletId/shift-templates', requirePermission(PERMI
 });
 
 // POST /api/v1/outlets/:outletId/shift-templates
-pumpOperations.post('/outlets/:outletId/shift-templates', requirePermission(PERMISSIONS.SHIFTS_MANAGE) as any, async (c: AppContext) => {
+pumpOperations.post('/outlets/:outletId/shift-templates', requirePermission(PERMISSIONS.SHIFT_TEMPLATES_WRITE) as any, async (c: AppContext) => {
   const outletId = c.req.param('outletId');
   if (!outletId) return c.json({ success: false, data: null, error: { code: 'BAD_REQUEST', message: 'outletId is required' } }, 400);
 
@@ -942,7 +975,7 @@ pumpOperations.post('/outlets/:outletId/shift-templates', requirePermission(PERM
 });
 
 // GET /api/v1/shift-templates/:id
-pumpOperations.get('/shift-templates/:id', requirePermission(PERMISSIONS.SHIFTS_READ) as any, async (c: AppContext) => {
+pumpOperations.get('/shift-templates/:id', requirePermission(PERMISSIONS.SHIFT_TEMPLATES_READ) as any, async (c: AppContext) => {
   const id = c.req.param('id');
   if (!id) return c.json({ success: false, data: null, error: { code: 'BAD_REQUEST', message: 'id is required' } }, 400);
 
@@ -963,7 +996,7 @@ pumpOperations.get('/shift-templates/:id', requirePermission(PERMISSIONS.SHIFTS_
 });
 
 // PUT /api/v1/shift-templates/:id
-pumpOperations.put('/shift-templates/:id', requirePermission(PERMISSIONS.SHIFTS_MANAGE) as any, async (c: AppContext) => {
+pumpOperations.put('/shift-templates/:id', requirePermission(PERMISSIONS.SHIFT_TEMPLATES_WRITE) as any, async (c: AppContext) => {
   const id = c.req.param('id');
   if (!id) return c.json({ success: false, data: null, error: { code: 'BAD_REQUEST', message: 'id is required' } }, 400);
 
@@ -1010,7 +1043,7 @@ pumpOperations.put('/shift-templates/:id', requirePermission(PERMISSIONS.SHIFTS_
 });
 
 // PATCH /api/v1/shift-templates/:id/status
-pumpOperations.patch('/shift-templates/:id/status', requirePermission(PERMISSIONS.SHIFTS_MANAGE) as any, async (c: AppContext) => {
+pumpOperations.patch('/shift-templates/:id/status', requirePermission(PERMISSIONS.SHIFT_TEMPLATES_WRITE) as any, async (c: AppContext) => {
   const id = c.req.param('id');
   if (!id) return c.json({ success: false, data: null, error: { code: 'BAD_REQUEST', message: 'id is required' } }, 400);
 

@@ -19,8 +19,8 @@ import {
 
 export const ProductsPage: React.FC = () => {
   const { hasPermission, userCtx } = useAuth();
-  const isGlobalAdmin = userCtx?.roles.includes('ADMIN') || userCtx?.isGlobalScope;
-  const canWrite = isGlobalAdmin || hasPermission(PERMISSIONS.PRODUCTS_WRITE);
+  const isGlobalAdmin = Boolean(userCtx?.roles.includes('ADMIN') && userCtx?.isGlobalScope === true);
+  const canWrite = isGlobalAdmin && hasPermission(PERMISSIONS.PRODUCTS_MANAGE_GLOBAL);
 
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);

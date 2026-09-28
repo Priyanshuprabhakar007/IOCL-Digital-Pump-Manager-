@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { getDb } from '../../db';
-import { PumpRepository, calcGrossQuantity, calcNetQuantity, round3 } from '../repositories/pumpRepository';
+import { PumpRepository } from '../repositories/pumpRepository';
 import { OutletRepository } from '../repositories/outletRepository';
 import { AuditRepository } from '../repositories/auditRepository';
 import { ScopeService } from '../services/scopeService';
@@ -12,6 +12,7 @@ import {
   NozzleUnavailabilitySchema,
 } from '../../shared/validators';
 import { PERMISSIONS } from '../../shared/constants';
+import { parseMilliunits, formatMilliunits } from '../../shared/precision';
 
 export const shifts = new Hono<{ Bindings: EnvBindings }>();
 
@@ -46,7 +47,7 @@ shifts.get('/outlets/:outletId/shifts', requirePermission(PERMISSIONS.SHIFTS_REA
 });
 
 // POST /api/v1/outlets/:outletId/shifts/open - Open a new operational shift
-shifts.post('/outlets/:outletId/shifts/open', requirePermission(PERMISSIONS.SHIFTS_MANAGE) as any, async (c: AppContext) => {
+shifts.post('/outlets/:outletId/shifts/open', requirePermission(PERMISSIONS.SHIFTS_OPEN) as any, async (c: AppContext) => {
   const outletId = c.req.param('outletId');
   if (!outletId) return c.json({ success: false, data: null, error: { code: 'BAD_REQUEST', message: 'outletId is required' } }, 400);
 
@@ -57,6 +58,19 @@ shifts.post('/outlets/:outletId/shifts/open', requirePermission(PERMISSIONS.SHIF
 
   if (!await verifyOutletAuthority(c, outletId, outletRepo)) {
     return c.json({ success: false, data: null, error: { code: 'FORBIDDEN', message: 'No authority over this outlet' } }, 403);
+  }
+
+  // Phase 2A Hardening: Enforce at most ONE operational shift with status OPEN for an outlet
+  const activeOpenShift = await pumpRepo.findActiveOpenShift(outletId);
+  if (activeOpenShift) {
+    return c.json({
+      success: false,
+      data: null,
+      error: {
+        code: 'OPEN_SHIFT_EXISTS',
+        message: `An active operational shift is already OPEN for this outlet (Shift ID: ${activeOpenShift.id}, Date: ${activeOpenShift.businessDate}). Close the prior shift before opening a new one.`,
+      },
+    }, 409);
   }
 
   const body = await c.req.json().catch(() => ({}));
@@ -103,8 +117,11 @@ shifts.post('/outlets/:outletId/shifts/open', requirePermission(PERMISSIONS.SHIF
   }
 
   const nowIso = new Date().toISOString();
-  const opened = await pumpRepo.openOperationalShift({
-    id: `ops-${crypto.randomUUID()}`,
+  const shiftId = `ops-${crypto.randomUUID()}`;
+
+  // Open shift and capture snapshot atomically
+  const { shift: opened, snapshotsCount } = await pumpRepo.openOperationalShiftWithSnapshot({
+    id: shiftId,
     outletId,
     shiftTemplateId,
     businessDate,
@@ -121,7 +138,7 @@ shifts.post('/outlets/:outletId/shifts/open', requirePermission(PERMISSIONS.SHIF
     action: 'SHIFT_OPEN',
     entityType: 'OPERATIONAL_SHIFT',
     entityId: opened.id,
-    newValue: opened as unknown as Record<string, unknown>,
+    newValue: { ...opened, snapshotsCount } as unknown as Record<string, unknown>,
     ipAddress: c.req.header('cf-connecting-ip') || null,
     userAgent: c.req.header('user-agent') || null,
     createdAt: nowIso,
@@ -152,7 +169,7 @@ shifts.get('/shifts/:shiftId', requirePermission(PERMISSIONS.SHIFTS_READ) as any
 });
 
 // POST /api/v1/shifts/:shiftId/close - Transactionally close operational shift with completeness validation
-shifts.post('/shifts/:shiftId/close', requirePermission(PERMISSIONS.SHIFTS_MANAGE) as any, async (c: AppContext) => {
+shifts.post('/shifts/:shiftId/close', requirePermission(PERMISSIONS.SHIFTS_CLOSE) as any, async (c: AppContext) => {
   const shiftId = c.req.param('shiftId');
   if (!shiftId) return c.json({ success: false, data: null, error: { code: 'BAD_REQUEST', message: 'shiftId is required' } }, 400);
 
@@ -179,9 +196,8 @@ shifts.post('/shifts/:shiftId/close', requirePermission(PERMISSIONS.SHIFTS_MANAG
   }
 
   // Completeness Validation:
-  // Verify every ACTIVE nozzle assigned to the outlet has a valid meter reading,
-  // unless explicitly marked unavailable through an approved reason.
-  const activeNozzles = await pumpRepo.listActiveNozzlesForOutlet(shift.outletId);
+  // Must verify every snapshot nozzle assigned at opening has a valid meter reading or approved unavailability record.
+  const snapshots = await pumpRepo.listShiftNozzleSnapshots(shiftId);
   const readings = await pumpRepo.listReadingsForShift(shiftId);
   const unavails = await pumpRepo.listUnavailabilityForShift(shiftId);
 
@@ -189,11 +205,11 @@ shifts.post('/shifts/:shiftId/close', requirePermission(PERMISSIONS.SHIFTS_MANAG
   readings.forEach(r => coveredNozzleIds.add(r.nozzleId));
   unavails.forEach(u => coveredNozzleIds.add(u.nozzleId));
 
-  const missingNozzles = activeNozzles.filter(n => !coveredNozzleIds.has(n.id));
+  const missingSnapshots = snapshots.filter(s => !coveredNozzleIds.has(s.nozzleId));
 
-  if (missingNozzles.length > 0) {
-    const missingDescriptions = missingNozzles.map(
-      n => `Dispenser #${n.dispenserNumber} - Nozzle #${n.nozzleNumber} (${n.productName || n.productCode})`
+  if (missingSnapshots.length > 0) {
+    const missingDescriptions = missingSnapshots.map(
+      s => `Dispenser #${s.dispenserNumber} - Nozzle #${s.nozzleNumber} (${s.productName || s.productCode})`
     );
 
     return c.json({
@@ -201,16 +217,24 @@ shifts.post('/shifts/:shiftId/close', requirePermission(PERMISSIONS.SHIFTS_MANAG
       data: null,
       error: {
         code: 'INCOMPLETE_SHIFT_READINGS',
-        message: `Cannot close shift. ${missingNozzles.length} active nozzle(s) have neither a meter reading nor an approved unavailability record.`,
+        message: `Cannot close shift. ${missingSnapshots.length} active nozzle(s) have neither a meter reading nor an approved unavailability record.`,
         details: {
-          missingCount: missingNozzles.length,
+          missingCount: missingSnapshots.length,
           missingNozzles: missingDescriptions,
         },
       },
     }, 400);
   }
 
-  const closed = await pumpRepo.closeOperationalShift(shiftId, c.var.user!.user.id);
+  // Concurrent immutability safe conditional close
+  const closed = await pumpRepo.closeOperationalShiftConditional(shiftId, c.var.user!.user.id);
+  if (!closed || closed.status !== 'CLOSED') {
+    return c.json({
+      success: false,
+      data: null,
+      error: { code: 'SHIFT_CLOSED', message: 'Operational shift was closed concurrently.' },
+    }, 409);
+  }
 
   await auditRepo.logAction({
     id: `aud-${crypto.randomUUID()}`,
@@ -251,11 +275,11 @@ shifts.get('/shifts/:shiftId/entry-grid', requirePermission(PERMISSIONS.SHIFTS_R
 });
 
 // ==========================================
-// 2. NOZZLE METER READINGS
+// 2. NOZZLE METER READINGS (EXACT 3-DECIMAL SCALED INTEGER PRECISION)
 // ==========================================
 
 // GET /api/v1/shifts/:shiftId/readings - List readings for shift
-shifts.get('/shifts/:shiftId/readings', requirePermission(PERMISSIONS.READINGS_READ) as any, async (c: AppContext) => {
+shifts.get('/shifts/:shiftId/readings', requirePermission(PERMISSIONS.METER_READINGS_READ) as any, async (c: AppContext) => {
   const shiftId = c.req.param('shiftId');
   if (!shiftId) return c.json({ success: false, data: null, error: { code: 'BAD_REQUEST', message: 'shiftId is required' } }, 400);
 
@@ -276,8 +300,8 @@ shifts.get('/shifts/:shiftId/readings', requirePermission(PERMISSIONS.READINGS_R
   return c.json({ success: true, data: readings, error: null });
 });
 
-// POST /api/v1/shifts/:shiftId/readings - Record meter reading
-shifts.post('/shifts/:shiftId/readings', requirePermission(PERMISSIONS.READINGS_WRITE) as any, async (c: AppContext) => {
+// POST /api/v1/shifts/:shiftId/readings - Record or update meter reading
+shifts.post('/shifts/:shiftId/readings', requirePermission(PERMISSIONS.METER_READINGS_WRITE) as any, async (c: AppContext) => {
   const shiftId = c.req.param('shiftId');
   if (!shiftId) return c.json({ success: false, data: null, error: { code: 'BAD_REQUEST', message: 'shiftId is required' } }, 400);
 
@@ -319,239 +343,139 @@ shifts.post('/shifts/:shiftId/readings', requirePermission(PERMISSIONS.READINGS_
 
   const { nozzleId, openingTotalizer, closingTotalizer, testingQuantity, varianceReason } = parseResult.data;
 
-  // Validate nozzle exists, belongs to operational shift's outlet, is ACTIVE, and dispenser is ACTIVE
-  const nozzle = await pumpRepo.findNozzleById(nozzleId);
-  if (!nozzle || nozzle.outletId !== shift.outletId) {
+  // Validate nozzle exists in the snapshot for this shift
+  const snapshot = await pumpRepo.findShiftNozzleSnapshot(shiftId, nozzleId);
+  if (!snapshot) {
     return c.json({
       success: false,
       data: null,
-      error: { code: 'INVALID_NOZZLE', message: 'Nozzle does not exist or does not belong to this outlet' },
+      error: { code: 'INVALID_NOZZLE', message: 'Nozzle was not part of the active snapshot for this operational shift' },
     }, 400);
   }
 
-  if (nozzle.status !== 'ACTIVE') {
+  // Exact 3-decimal integer milliunits arithmetic
+  let openingMilli: number;
+  let closingMilli: number;
+  let testingMilli: number;
+
+  try {
+    openingMilli = parseMilliunits(openingTotalizer);
+    closingMilli = parseMilliunits(closingTotalizer);
+    testingMilli = parseMilliunits(testingQuantity || '0.000');
+  } catch (err: any) {
     return c.json({
       success: false,
       data: null,
-      error: { code: 'INACTIVE_NOZZLE', message: `Nozzle #${nozzle.nozzleNumber} is ${nozzle.status}, not ACTIVE` },
+      error: { code: 'VALIDATION_ERROR', message: err.message },
     }, 400);
   }
 
-  const dispenser = await pumpRepo.findDispenserById(nozzle.dispenserId);
-  if (!dispenser || dispenser.status !== 'ACTIVE') {
+  if (closingMilli < openingMilli) {
     return c.json({
       success: false,
       data: null,
-      error: { code: 'INACTIVE_DISPENSER', message: `Dispenser #${dispenser?.dispenserNumber} is not ACTIVE` },
+      error: { code: 'VALIDATION_ERROR', message: 'Closing totalizer must be greater than or equal to opening totalizer' },
     }, 400);
   }
 
-  // Prevent duplicate reading row for operational_shift_id + nozzle_id
-  const existingReading = await pumpRepo.findReadingByShiftAndNozzle(shiftId, nozzleId);
-  if (existingReading) {
-    return c.json({
-      success: false,
-      data: null,
-      error: { code: 'CONFLICT', message: 'A meter reading already exists for this nozzle in this shift' },
-    }, 409);
-  }
-
-  // Business formula calculations
-  const grossSales = calcGrossQuantity(closingTotalizer, openingTotalizer);
-  if (testingQuantity > grossSales) {
+  const grossMilli = closingMilli - openingMilli;
+  if (testingMilli > grossMilli) {
     return c.json({
       success: false,
       data: null,
       error: {
         code: 'VALIDATION_ERROR',
-        message: `Testing quantity (${testingQuantity}) cannot exceed gross sales quantity (${grossSales})`,
+        message: `Testing quantity (${formatMilliunits(testingMilli)}) cannot exceed gross sales quantity (${formatMilliunits(grossMilli)})`,
       },
     }, 400);
   }
-  const netSales = calcNetQuantity(grossSales, testingQuantity);
+
+  const netMilli = grossMilli - testingMilli;
 
   // Continuity check:
   // Find the most recent CLOSED previous shift reading for this nozzle.
   const latestPrev = await pumpRepo.getLatestClosedReadingForNozzle(nozzleId);
   let hasOpeningVariance = false;
-  let openingVarianceQuantity = 0;
+  let openingVarianceMilliunits = 0;
   let finalVarianceReason: string | null = null;
 
-  if (latestPrev) {
-    const diff = round3(openingTotalizer - latestPrev.closingTotalizer);
-    if (Math.abs(diff) > 0.0001) {
+  if (latestPrev && latestPrev.closingTotalizerMilliunits !== undefined) {
+    const prevClosingMilli = latestPrev.closingTotalizerMilliunits;
+    if (openingMilli !== prevClosingMilli) {
       if (!varianceReason || varianceReason.trim().length === 0) {
         return c.json({
           success: false,
           data: null,
           error: {
             code: 'VARIANCE_REASON_REQUIRED',
-            message: `Opening totalizer (${openingTotalizer}) differs from previous shift closing totalizer (${latestPrev.closingTotalizer}) by ${diff}. A variance_reason is required.`,
+            message: `Opening totalizer (${formatMilliunits(openingMilli)}) differs from previous shift closing totalizer (${formatMilliunits(prevClosingMilli)}). A variance_reason is required.`,
             details: {
-              enteredOpening: openingTotalizer,
-              previousClosing: latestPrev.closingTotalizer,
-              varianceQuantity: diff,
+              enteredOpening: formatMilliunits(openingMilli),
+              previousClosing: formatMilliunits(prevClosingMilli),
+              varianceQuantity: formatMilliunits(openingMilli - prevClosingMilli),
             },
           },
         }, 400);
       }
 
       hasOpeningVariance = true;
-      openingVarianceQuantity = diff;
+      openingVarianceMilliunits = openingMilli - prevClosingMilli;
       finalVarianceReason = varianceReason.trim();
     }
   }
 
   const nowIso = new Date().toISOString();
-  const created = await pumpRepo.createReading({
-    id: `nmr-${crypto.randomUUID()}`,
-    operationalShiftId: shiftId,
-    outletId: shift.outletId,
-    nozzleId,
-    openingTotalizer: round3(openingTotalizer),
-    closingTotalizer: round3(closingTotalizer),
-    testingQuantity: round3(testingQuantity),
-    grossSalesQuantity: grossSales,
-    netSalesQuantity: netSales,
-    recordedByUserId: c.var.user!.user.id,
-    hasOpeningVariance,
-    openingVarianceQuantity,
-    varianceReason: finalVarianceReason,
-    createdAt: nowIso,
-    updatedAt: nowIso,
-  });
+  const existingReading = await pumpRepo.findReadingByShiftAndNozzle(shiftId, nozzleId);
 
-  // If there was an unavailability record for this nozzle, remove it
+  let resultReading;
+  if (existingReading) {
+    resultReading = await pumpRepo.updateReading(shiftId, nozzleId, {
+      openingMilliunits: openingMilli,
+      closingMilliunits: closingMilli,
+      testingMilliunits: testingMilli,
+      grossMilliunits: grossMilli,
+      netMilliunits: netMilli,
+      hasOpeningVariance,
+      openingVarianceMilliunits,
+      varianceReason: finalVarianceReason,
+      updatedAt: nowIso,
+    });
+  } else {
+    resultReading = await pumpRepo.createReading({
+      id: `nmr-${crypto.randomUUID()}`,
+      operationalShiftId: shiftId,
+      outletId: shift.outletId,
+      nozzleId,
+      openingMilliunits: openingMilli,
+      closingMilliunits: closingMilli,
+      testingMilliunits: testingMilli,
+      grossMilliunits: grossMilli,
+      netMilliunits: netMilli,
+      recordedByUserId: c.var.user!.user.id,
+      hasOpeningVariance,
+      openingVarianceMilliunits,
+      varianceReason: finalVarianceReason,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    });
+  }
+
+  // Remove any unavailability record for this nozzle
   await pumpRepo.removeUnavailability(shiftId, nozzleId);
 
   await auditRepo.logAction({
     id: `aud-${crypto.randomUUID()}`,
     userId: c.var.user!.user.id,
-    action: 'METER_READING_RECORD',
+    action: existingReading ? 'METER_READING_UPDATE' : 'METER_READING_RECORD',
     entityType: 'NOZZLE_METER_READING',
-    entityId: created.id,
-    newValue: created as unknown as Record<string, unknown>,
+    entityId: resultReading!.id,
+    newValue: resultReading as unknown as Record<string, unknown>,
     ipAddress: c.req.header('cf-connecting-ip') || null,
     userAgent: c.req.header('user-agent') || null,
     createdAt: nowIso,
   });
 
-  return c.json({ success: true, data: created, error: null }, 201);
-});
-
-// PUT /api/v1/shifts/:shiftId/readings/:readingId - Update meter reading
-shifts.put('/shifts/:shiftId/readings/:readingId', requirePermission(PERMISSIONS.READINGS_WRITE) as any, async (c: AppContext) => {
-  const shiftId = c.req.param('shiftId');
-  const readingId = c.req.param('readingId');
-  if (!shiftId || !readingId) return c.json({ success: false, data: null, error: { code: 'BAD_REQUEST', message: 'shiftId and readingId are required' } }, 400);
-
-  const db = getDb(c.env.DB);
-  const outletRepo = new OutletRepository(db);
-  const pumpRepo = new PumpRepository(db);
-  const auditRepo = new AuditRepository(db);
-
-  const shift = await pumpRepo.findOperationalShiftById(shiftId);
-  if (!shift) {
-    return c.json({ success: false, data: null, error: { code: 'NOT_FOUND', message: 'Operational shift not found' } }, 404);
-  }
-
-  if (!await verifyOutletAuthority(c, shift.outletId, outletRepo)) {
-    return c.json({ success: false, data: null, error: { code: 'FORBIDDEN', message: 'No authority over this shift outlet' } }, 403);
-  }
-
-  // Immutability: Prohibit modifications to closed/locked shifts
-  if (shift.status === 'CLOSED' || shift.status === 'LOCKED') {
-    return c.json({
-      success: false,
-      data: null,
-      error: {
-        code: 'SHIFT_CLOSED',
-        message: `Operational shift is ${shift.status}. Modifying meter readings on a closed or locked shift is prohibited.`,
-      },
-    }, 409);
-  }
-
-  const existing = await pumpRepo.findReadingById(readingId);
-  if (!existing || existing.operationalShiftId !== shiftId) {
-    return c.json({ success: false, data: null, error: { code: 'NOT_FOUND', message: 'Meter reading not found' } }, 404);
-  }
-
-  const body = await c.req.json().catch(() => ({}));
-  const parseResult = MeterReadingSchema.safeParse({ ...body, nozzleId: existing.nozzleId });
-  if (!parseResult.success) {
-    return c.json({
-      success: false,
-      data: null,
-      error: { code: 'VALIDATION_ERROR', message: 'Invalid reading payload', details: parseResult.error.flatten() },
-    }, 400);
-  }
-
-  const { openingTotalizer, closingTotalizer, testingQuantity, varianceReason } = parseResult.data;
-
-  const grossSales = calcGrossQuantity(closingTotalizer, openingTotalizer);
-  if (testingQuantity > grossSales) {
-    return c.json({
-      success: false,
-      data: null,
-      error: {
-        code: 'VALIDATION_ERROR',
-        message: `Testing quantity (${testingQuantity}) cannot exceed gross sales quantity (${grossSales})`,
-      },
-    }, 400);
-  }
-  const netSales = calcNetQuantity(grossSales, testingQuantity);
-
-  const latestPrev = await pumpRepo.getLatestClosedReadingForNozzle(existing.nozzleId);
-  let hasOpeningVariance = false;
-  let openingVarianceQuantity = 0;
-  let finalVarianceReason: string | null = null;
-
-  if (latestPrev) {
-    const diff = round3(openingTotalizer - latestPrev.closingTotalizer);
-    if (Math.abs(diff) > 0.0001) {
-      if (!varianceReason || varianceReason.trim().length === 0) {
-        return c.json({
-          success: false,
-          data: null,
-          error: {
-            code: 'VARIANCE_REASON_REQUIRED',
-            message: `Opening totalizer (${openingTotalizer}) differs from previous shift closing totalizer (${latestPrev.closingTotalizer}) by ${diff}. A variance_reason is required.`,
-          },
-        }, 400);
-      }
-      hasOpeningVariance = true;
-      openingVarianceQuantity = diff;
-      finalVarianceReason = varianceReason.trim();
-    }
-  }
-
-  const nowIso = new Date().toISOString();
-  const updated = await pumpRepo.updateReading(readingId, {
-    openingTotalizer: round3(openingTotalizer),
-    closingTotalizer: round3(closingTotalizer),
-    testingQuantity: round3(testingQuantity),
-    grossSalesQuantity: grossSales,
-    netSalesQuantity: netSales,
-    hasOpeningVariance,
-    openingVarianceQuantity,
-    varianceReason: finalVarianceReason,
-    updatedAt: nowIso,
-  });
-
-  await auditRepo.logAction({
-    id: `aud-${crypto.randomUUID()}`,
-    userId: c.var.user!.user.id,
-    action: 'METER_READING_UPDATE',
-    entityType: 'NOZZLE_METER_READING',
-    entityId: readingId,
-    oldValue: existing as unknown as Record<string, unknown>,
-    newValue: updated as unknown as Record<string, unknown>,
-    ipAddress: c.req.header('cf-connecting-ip') || null,
-    userAgent: c.req.header('user-agent') || null,
-    createdAt: nowIso,
-  });
-
-  return c.json({ success: true, data: updated, error: null });
+  return c.json({ success: true, data: resultReading, error: null }, existingReading ? 200 : 201);
 });
 
 // ==========================================
@@ -559,7 +483,7 @@ shifts.put('/shifts/:shiftId/readings/:readingId', requirePermission(PERMISSIONS
 // ==========================================
 
 // GET /api/v1/shifts/:shiftId/nozzle-unavailability
-shifts.get('/shifts/:shiftId/nozzle-unavailability', requirePermission(PERMISSIONS.READINGS_READ) as any, async (c: AppContext) => {
+shifts.get('/shifts/:shiftId/nozzle-unavailability', requirePermission(PERMISSIONS.METER_READINGS_READ) as any, async (c: AppContext) => {
   const shiftId = c.req.param('shiftId');
   if (!shiftId) return c.json({ success: false, data: null, error: { code: 'BAD_REQUEST', message: 'shiftId is required' } }, 400);
 
@@ -581,7 +505,7 @@ shifts.get('/shifts/:shiftId/nozzle-unavailability', requirePermission(PERMISSIO
 });
 
 // POST /api/v1/shifts/:shiftId/nozzle-unavailability
-shifts.post('/shifts/:shiftId/nozzle-unavailability', requirePermission(PERMISSIONS.READINGS_WRITE) as any, async (c: AppContext) => {
+shifts.post('/shifts/:shiftId/nozzle-unavailability', requirePermission(PERMISSIONS.METER_READINGS_WRITE) as any, async (c: AppContext) => {
   const shiftId = c.req.param('shiftId');
   if (!shiftId) return c.json({ success: false, data: null, error: { code: 'BAD_REQUEST', message: 'shiftId is required' } }, 400);
 
@@ -623,10 +547,10 @@ shifts.post('/shifts/:shiftId/nozzle-unavailability', requirePermission(PERMISSI
 
   const { nozzleId, reason } = parseResult.data;
 
-  // Validate nozzle belongs to outlet
-  const nozzle = await pumpRepo.findNozzleById(nozzleId);
-  if (!nozzle || nozzle.outletId !== shift.outletId) {
-    return c.json({ success: false, data: null, error: { code: 'INVALID_NOZZLE', message: 'Nozzle not found at this outlet' } }, 400);
+  // Validate nozzle exists in snapshot for this shift
+  const snap = await pumpRepo.findShiftNozzleSnapshot(shiftId, nozzleId);
+  if (!snap) {
+    return c.json({ success: false, data: null, error: { code: 'INVALID_NOZZLE', message: 'Nozzle was not found in shift snapshot' } }, 400);
   }
 
   const nowIso = new Date().toISOString();
@@ -655,7 +579,7 @@ shifts.post('/shifts/:shiftId/nozzle-unavailability', requirePermission(PERMISSI
 });
 
 // DELETE /api/v1/shifts/:shiftId/nozzle-unavailability/:nozzleId
-shifts.delete('/shifts/:shiftId/nozzle-unavailability/:nozzleId', requirePermission(PERMISSIONS.READINGS_WRITE) as any, async (c: AppContext) => {
+shifts.delete('/shifts/:shiftId/nozzle-unavailability/:nozzleId', requirePermission(PERMISSIONS.METER_READINGS_WRITE) as any, async (c: AppContext) => {
   const shiftId = c.req.param('shiftId');
   const nozzleId = c.req.param('nozzleId');
   if (!shiftId || !nozzleId) return c.json({ success: false, data: null, error: { code: 'BAD_REQUEST', message: 'shiftId and nozzleId are required' } }, 400);
@@ -708,7 +632,7 @@ shifts.delete('/shifts/:shiftId/nozzle-unavailability/:nozzleId', requirePermiss
 // ==========================================
 
 // GET /api/v1/shifts/:shiftId/sales-summary - Authoritative backend generated shift summary
-shifts.get('/shifts/:shiftId/sales-summary', requirePermission(PERMISSIONS.READINGS_READ) as any, async (c: AppContext) => {
+shifts.get('/shifts/:shiftId/sales-summary', requirePermission(PERMISSIONS.METER_READINGS_READ) as any, async (c: AppContext) => {
   const shiftId = c.req.param('shiftId');
   if (!shiftId) return c.json({ success: false, data: null, error: { code: 'BAD_REQUEST', message: 'shiftId is required' } }, 400);
 

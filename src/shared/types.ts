@@ -1,6 +1,6 @@
 import { RoleCode, ScopeLevel, PermissionCode } from './constants';
 
-export type { RoleCode, ScopeLevel, PermissionCode };
+export * from './constants';
 
 export interface User {
   id: string;
@@ -13,18 +13,41 @@ export interface User {
   updatedAt: string;
 }
 
-export interface Role {
+export interface UserWithDetails extends User {
+  roles: RoleSummary[];
+  scopes: UserScopeAssignment[];
+}
+
+export interface RoleSummary {
   id: string;
   code: RoleCode;
   name: string;
   description: string;
 }
 
-export interface Permission {
+export interface PermissionSummary {
   id: string;
   code: PermissionCode;
   name: string;
   description: string;
+}
+
+export interface UserScopeAssignment {
+  id: string;
+  userId: string;
+  scopeLevel: ScopeLevel;
+  stateId: string | null;
+  divisionId: string | null;
+  salesAreaId: string | null;
+  outletId: string | null;
+  assignedByUserId?: string;
+  createdBy?: string;
+  createdAt: string;
+  userName?: string;
+  stateName?: string;
+  divisionName?: string;
+  salesAreaName?: string;
+  outletName?: string;
 }
 
 export interface State {
@@ -50,13 +73,13 @@ export interface Division {
 export interface SalesArea {
   id: string;
   divisionId: string;
+  stateId?: string;
   code: string;
   name: string;
   status: 'ACTIVE' | 'INACTIVE';
   createdAt: string;
   updatedAt: string;
   divisionName?: string;
-  stateId?: string;
   stateName?: string;
 }
 
@@ -65,21 +88,23 @@ export interface RetailOutlet {
   roCode: string;
   name: string;
   outletType: 'COCO' | 'CODO' | 'A_SITE';
+  category?: 'A_SITE' | 'B_SITE' | 'COCO' | 'CORO';
   stateId: string;
   divisionId: string;
   salesAreaId: string;
   address: string;
+  location?: string;
   city: string;
   district: string;
   pincode: string;
-  latitude: number | null;
-  longitude: number | null;
-  status: 'ACTIVE' | 'INACTIVE';
+  latitude?: number | null;
+  longitude?: number | null;
+  status: 'ACTIVE' | 'INACTIVE' | 'SUSPENDED';
   createdAt: string;
   updatedAt: string;
-  stateName?: string;
-  divisionName?: string;
   salesAreaName?: string;
+  divisionName?: string;
+  stateName?: string;
   assignedUsersCount?: number;
 }
 
@@ -87,34 +112,13 @@ export interface OutletUserAssignment {
   id: string;
   outletId: string;
   userId: string;
-  assignmentType: 'DEALER' | 'CSP' | 'INSPECTOR';
-  effectiveFrom: string;
-  effectiveTo: string | null;
-  isActive: boolean;
+  assignmentType?: 'DEALER' | 'CSP' | 'INSPECTOR';
+  effectiveFrom?: string;
+  effectiveTo?: string | null;
+  isActive?: boolean;
+  isPrimary?: boolean;
   createdAt: string;
-  createdBy: string;
-  userName?: string;
-  userEmail?: string;
-  userEmpCode?: string;
-  outletName?: string;
-  roCode?: string;
-}
-
-export interface UserScopeAssignment {
-  id: string;
-  userId: string;
-  scopeLevel: ScopeLevel;
-  stateId: string | null;
-  divisionId: string | null;
-  salesAreaId: string | null;
-  outletId: string | null;
-  createdAt: string;
-  createdBy: string;
-  userName?: string;
-  stateName?: string;
-  divisionName?: string;
-  salesAreaName?: string;
-  outletName?: string;
+  createdBy?: string;
 }
 
 export interface Session {
@@ -124,14 +128,16 @@ export interface Session {
   expiresAt: string;
   createdAt: string;
   lastSeenAt: string;
-  ipAddress: string | null;
-  userAgent: string | null;
-  revokedAt: string | null;
+  ipAddress?: string | null;
+  userAgent?: string | null;
+  revokedAt?: string | null;
 }
 
 export interface AuditLog {
   id: string;
   userId: string | null;
+  userName?: string;
+  userEmail?: string;
   action: string;
   entityType: string;
   entityId: string;
@@ -140,11 +146,9 @@ export interface AuditLog {
   ipAddress: string | null;
   userAgent: string | null;
   createdAt: string;
-  userName?: string;
-  userEmail?: string;
 }
 
-export interface Document {
+export interface DocumentRecord {
   id: string;
   r2Key: string;
   name: string;
@@ -156,6 +160,8 @@ export interface Document {
   uploadedByName?: string;
   outletName?: string;
 }
+
+export type Document = DocumentRecord;
 
 export interface UserContext {
   user: User;
@@ -300,6 +306,26 @@ export interface OperationalShift {
   roCode?: string;
 }
 
+export interface OperationalShiftNozzleSnapshot {
+  id: string;
+  operationalShiftId: string;
+  outletId: string;
+  nozzleId: string;
+  dispenserId: string;
+  dispenserNumber: number;
+  dispenserName: string;
+  nozzleNumber: number;
+  productId: string;
+  productCode: string;
+  productName: string;
+  productCategory: string;
+  productUnit: ProductUnit;
+  tankId: string;
+  tankNumber: number;
+  snapshotStatus: string;
+  createdAt: string;
+}
+
 export interface NozzleMeterReading {
   id: string;
   operationalShiftId: string;
@@ -310,9 +336,21 @@ export interface NozzleMeterReading {
   testingQuantity: number;
   grossSalesQuantity: number;
   netSalesQuantity: number;
+  openingTotalizerMilliunits?: number;
+  closingTotalizerMilliunits?: number;
+  testingQuantityMilliunits?: number;
+  grossSalesQuantityMilliunits?: number;
+  netSalesQuantityMilliunits?: number;
+  openingVarianceMilliunits?: number;
+  openingTotalizerStr: string;
+  closingTotalizerStr: string;
+  testingQuantityStr: string;
+  grossSalesQuantityStr: string;
+  netSalesQuantityStr: string;
   recordedByUserId: string;
   hasOpeningVariance: boolean;
   openingVarianceQuantity: number;
+  openingVarianceStr?: string;
   varianceReason: string | null;
   createdAt: string;
   updatedAt: string;
@@ -337,6 +375,16 @@ export interface NozzleUnavailabilityRecord {
   recordedByName?: string;
 }
 
+export interface UnitQuantitySummary {
+  unit: ProductUnit;
+  grossQuantity: string;
+  testingQuantity: string;
+  netQuantity: string;
+  grossMilliunits?: number;
+  testingMilliunits?: number;
+  netMilliunits?: number;
+}
+
 export interface ShiftSalesSummary {
   operationalShiftId: string;
   businessDate: string;
@@ -347,49 +395,47 @@ export interface ShiftSalesSummary {
     nozzleNumber: number;
     dispenserId: string;
     dispenserNumber: number;
+    dispenserName: string;
     productId: string;
+    productCode: string;
     productName: string;
     productCategory: string;
-    unit: string;
-    openingTotalizer: number | null;
-    closingTotalizer: number | null;
-    grossQuantity: number;
-    testingQuantity: number;
-    netQuantity: number;
+    unit: ProductUnit;
+    openingTotalizerStr: string | null;
+    closingTotalizerStr: string | null;
+    grossQuantity: string;
+    testingQuantity: string;
+    netQuantity: string;
+    openingTotalizer?: number | null;
+    closingTotalizer?: number | null;
     isUnavailable: boolean;
     unavailableReason: string | null;
     hasVariance: boolean;
-    varianceQuantity: number;
+    varianceQuantity: string;
   }>;
   byDispenser: Array<{
     dispenserId: string;
     dispenserNumber: number;
     name: string;
-    grossQuantity: number;
-    testingQuantity: number;
-    netQuantity: number;
+    totalsByUnit: UnitQuantitySummary[];
   }>;
   byProduct: Array<{
     productId: string;
+    productCode: string;
     productName: string;
-    category: string;
-    unit: string;
-    grossQuantity: number;
-    testingQuantity: number;
-    netQuantity: number;
+    productCategory: string;
+    unit: ProductUnit;
+    grossQuantity: string;
+    testingQuantity: string;
+    netQuantity: string;
   }>;
-  totalOutletQuantity: {
-    grossQuantity: number;
-    testingQuantity: number;
-    netQuantity: number;
-  };
+  totalsByUnit: UnitQuantitySummary[];
 }
 
 export interface ShiftEntryGridItem {
-  nozzle: Nozzle;
+  snapshot: OperationalShiftNozzleSnapshot;
   reading?: NozzleMeterReading | null;
   unavailability?: NozzleUnavailabilityRecord | null;
-  suggestedOpeningTotalizer: number;
+  suggestedOpeningTotalizer: string;
   hasPreviousShift: boolean;
 }
-

@@ -45,24 +45,36 @@ export async function seedDatabase(db: AppDatabase) {
 
     { id: 'perm-a-r', code: PERMISSIONS.AUDIT_READ, name: 'Read Audit Logs', description: 'View system audit trail' },
 
-    // Phase 2A: Pump Operations & Shift Foundation
+    // Phase 2A Hardened: Granular Products
     { id: 'perm-prod-r', code: PERMISSIONS.PRODUCTS_READ, name: 'Read Products', description: 'View master fuel products catalog' },
-    { id: 'perm-prod-w', code: PERMISSIONS.PRODUCTS_WRITE, name: 'Write Products', description: 'Manage global products catalog' },
+    { id: 'perm-prod-mg', code: PERMISSIONS.PRODUCTS_MANAGE_GLOBAL, name: 'Manage Global Products', description: 'Manage global products catalog' },
+    { id: 'perm-oprod-r', code: PERMISSIONS.OUTLET_PRODUCTS_READ, name: 'Read Outlet Products', description: 'View outlet product assignments' },
+    { id: 'perm-oprod-w', code: PERMISSIONS.OUTLET_PRODUCTS_WRITE, name: 'Write Outlet Products', description: 'Assign products to outlet' },
 
+    // Phase 2A Hardened: Tanks
     { id: 'perm-tank-r', code: PERMISSIONS.TANKS_READ, name: 'Read Tanks', description: 'View underground storage tank master' },
     { id: 'perm-tank-w', code: PERMISSIONS.TANKS_WRITE, name: 'Write Tanks', description: 'Manage underground storage tanks' },
 
+    // Phase 2A Hardened: Dispensers
     { id: 'perm-disp-r', code: PERMISSIONS.DISPENSERS_READ, name: 'Read Dispensers', description: 'View dispenser units master' },
     { id: 'perm-disp-w', code: PERMISSIONS.DISPENSERS_WRITE, name: 'Write Dispensers', description: 'Manage dispenser units' },
 
+    // Phase 2A Hardened: Nozzles
     { id: 'perm-nozz-r', code: PERMISSIONS.NOZZLES_READ, name: 'Read Nozzles', description: 'View dispensing nozzles master' },
     { id: 'perm-nozz-w', code: PERMISSIONS.NOZZLES_WRITE, name: 'Write Nozzles', description: 'Manage dispensing nozzles' },
 
-    { id: 'perm-shf-r', code: PERMISSIONS.SHIFTS_READ, name: 'Read Shifts', description: 'View shift templates and operational shifts' },
-    { id: 'perm-shf-m', code: PERMISSIONS.SHIFTS_MANAGE, name: 'Manage Shifts', description: 'Open, close, and configure operational shifts' },
+    // Phase 2A Hardened: Shift Templates
+    { id: 'perm-stm-r', code: PERMISSIONS.SHIFT_TEMPLATES_READ, name: 'Read Shift Templates', description: 'View shift templates' },
+    { id: 'perm-stm-w', code: PERMISSIONS.SHIFT_TEMPLATES_WRITE, name: 'Write Shift Templates', description: 'Configure shift templates' },
 
-    { id: 'perm-rdg-r', code: PERMISSIONS.READINGS_READ, name: 'Read Readings', description: 'View nozzle meter readings and shift summaries' },
-    { id: 'perm-rdg-w', code: PERMISSIONS.READINGS_WRITE, name: 'Write Readings', description: 'Record meter readings and nozzle unavailability' },
+    // Phase 2A Hardened: Operational Shifts
+    { id: 'perm-shf-r', code: PERMISSIONS.SHIFTS_READ, name: 'Read Shifts', description: 'View operational shifts' },
+    { id: 'perm-shf-o', code: PERMISSIONS.SHIFTS_OPEN, name: 'Open Shifts', description: 'Open operational shifts' },
+    { id: 'perm-shf-c', code: PERMISSIONS.SHIFTS_CLOSE, name: 'Close Shifts', description: 'Close operational shifts' },
+
+    // Phase 2A Hardened: Meter Readings
+    { id: 'perm-rdg-r', code: PERMISSIONS.METER_READINGS_READ, name: 'Read Meter Readings', description: 'View nozzle meter readings' },
+    { id: 'perm-rdg-w', code: PERMISSIONS.METER_READINGS_WRITE, name: 'Write Meter Readings', description: 'Record meter readings and unavailability' },
   ];
   await db.insert(schema.permissions).values(permissionsList);
 
@@ -74,43 +86,45 @@ export async function seedDatabase(db: AppDatabase) {
     'perm-u-r', 'perm-u-c', 'perm-u-u',
     'perm-h-r', 'perm-o-r', 'perm-s-r', 'perm-s-a',
     'perm-d-r', 'perm-a-r',
-    'perm-prod-r', 'perm-tank-r', 'perm-disp-r', 'perm-nozz-r', 'perm-shf-r', 'perm-rdg-r',
+    'perm-prod-r', 'perm-oprod-r', 'perm-tank-r', 'perm-disp-r', 'perm-nozz-r', 'perm-stm-r', 'perm-shf-r', 'perm-rdg-r',
   ].map(pId => ({ roleId: 'role-so', permissionId: pId }));
 
   const divOfficePerms = [
     'perm-u-r', 'perm-u-c', 'perm-u-u',
     'perm-h-r', 'perm-o-r', 'perm-o-u',
     'perm-s-r', 'perm-d-r', 'perm-d-w', 'perm-a-r',
-    'perm-prod-r', 'perm-tank-r', 'perm-disp-r', 'perm-nozz-r', 'perm-shf-r', 'perm-rdg-r',
+    'perm-prod-r', 'perm-oprod-r', 'perm-tank-r', 'perm-disp-r', 'perm-nozz-r', 'perm-stm-r', 'perm-shf-r', 'perm-rdg-r',
   ].map(pId => ({ roleId: 'role-do', permissionId: pId }));
 
   const bmPerms = [
     'perm-u-r', 'perm-h-r', 'perm-o-r', 'perm-s-r', 'perm-d-r', 'perm-a-r',
-    'perm-prod-r', 'perm-tank-r', 'perm-disp-r', 'perm-nozz-r', 'perm-shf-r', 'perm-rdg-r',
+    'perm-prod-r', 'perm-oprod-r', 'perm-tank-r', 'perm-disp-r', 'perm-nozz-r', 'perm-stm-r', 'perm-shf-r', 'perm-rdg-r',
   ].map(pId => ({ roleId: 'role-bm', permissionId: pId }));
 
   const fieldOfficerPerms = [
     'perm-h-r', 'perm-o-r', 'perm-o-u', 'perm-d-r', 'perm-d-w',
-    'perm-prod-r', 'perm-tank-r', 'perm-disp-r', 'perm-nozz-r', 'perm-shf-r', 'perm-rdg-r',
+    'perm-prod-r', 'perm-oprod-r', 'perm-tank-r', 'perm-disp-r', 'perm-nozz-r', 'perm-stm-r', 'perm-shf-r', 'perm-rdg-r',
   ].map(pId => ({ roleId: 'role-fo', permissionId: pId }));
 
   const dealerPerms = [
     'perm-o-r', 'perm-d-r', 'perm-d-w',
-    'perm-prod-r', 'perm-prod-w',
+    'perm-prod-r', 'perm-oprod-r', 'perm-oprod-w',
     'perm-tank-r', 'perm-tank-w',
     'perm-disp-r', 'perm-disp-w',
     'perm-nozz-r', 'perm-nozz-w',
-    'perm-shf-r', 'perm-shf-m',
+    'perm-stm-r', 'perm-stm-w',
+    'perm-shf-r', 'perm-shf-o', 'perm-shf-c',
     'perm-rdg-r', 'perm-rdg-w',
   ].map(pId => ({ roleId: 'role-dealer', permissionId: pId }));
 
   const cspPerms = [
     'perm-o-r', 'perm-d-r',
-    'perm-prod-r',
+    'perm-prod-r', 'perm-oprod-r',
     'perm-tank-r',
     'perm-disp-r',
     'perm-nozz-r',
-    'perm-shf-r', 'perm-shf-m',
+    'perm-stm-r',
+    'perm-shf-r', 'perm-shf-o', 'perm-shf-c',
     'perm-rdg-r', 'perm-rdg-w',
   ].map(pId => ({ roleId: 'role-csp', permissionId: pId }));
 

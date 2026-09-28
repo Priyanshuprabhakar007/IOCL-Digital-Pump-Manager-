@@ -1,11 +1,12 @@
 import { z } from 'zod';
+import { parseMilliunits } from './precision';
 
 export const LoginSchema = z.object({
-  email: z.string().email('Invalid email address'),
-  password: z.string().min(6, 'Password must be at least 6 characters'),
+  email: z.string().email('Invalid email address').trim().toLowerCase(),
+  password: z.string().min(1, 'Password required'),
 });
 
-export const ValidRoleCodes = [
+export const RoleCodeSchema = z.enum([
   'ADMIN',
   'STATE_OFFICE',
   'DIVISIONAL_OFFICE',
@@ -13,102 +14,121 @@ export const ValidRoleCodes = [
   'FIELD_OFFICER',
   'DEALER',
   'CSP',
-] as const;
-
-export const RoleCodeSchema = z.enum(ValidRoleCodes);
-
-export const InitialScopePayloadSchema = z.discriminatedUnion('scopeLevel', [
-  z.object({
-    scopeLevel: z.literal('GLOBAL'),
-  }).strict(),
-  z.object({
-    scopeLevel: z.literal('STATE'),
-    stateId: z.string().min(1, 'stateId is required for STATE scope'),
-  }).strict(),
-  z.object({
-    scopeLevel: z.literal('DIVISION'),
-    divisionId: z.string().min(1, 'divisionId is required for DIVISION scope'),
-  }).strict(),
-  z.object({
-    scopeLevel: z.literal('SALES_AREA'),
-    salesAreaId: z.string().min(1, 'salesAreaId is required for SALES_AREA scope'),
-  }).strict(),
-  z.object({
-    scopeLevel: z.literal('OUTLET'),
-    outletId: z.string().min(1, 'outletId is required for OUTLET scope'),
-  }).strict(),
 ]);
 
-export type InitialScopePayload = z.infer<typeof InitialScopePayloadSchema>;
+export const ScopeLevelSchema = z.enum([
+  'GLOBAL',
+  'STATE',
+  'DIVISION',
+  'SALES_AREA',
+  'OUTLET',
+]);
 
-export const UserCreateSchema = z.object({
-  empCode: z.string().min(3, 'Employee code must be at least 3 characters'),
-  name: z.string().min(2, 'Name is required'),
-  email: z.string().email('Invalid email address'),
-  phone: z.string().min(10, 'Phone number must be at least 10 digits'),
+export const CreateUserSchema = z.object({
+  empCode: z.string().min(3, 'Employee code must be at least 3 characters').trim().toUpperCase(),
+  name: z.string().min(2, 'Name must be at least 2 characters').trim(),
+  email: z.string().email('Invalid email address').trim().toLowerCase(),
+  phone: z.string().min(10, 'Phone must be at least 10 digits').regex(/^[0-9+\-\s]+$/, 'Invalid phone number format'),
   password: z.string().min(8, 'Password must be at least 8 characters'),
-  roleCodes: z.array(RoleCodeSchema).min(1, 'At least one role is required'),
+  roleCodes: z.array(RoleCodeSchema).min(1, 'At least one valid role is required'),
   status: z.enum(['ACTIVE', 'INACTIVE', 'SUSPENDED']).default('ACTIVE'),
-  initialScope: InitialScopePayloadSchema.optional(),
+  initialScope: z.object({
+    scopeLevel: ScopeLevelSchema,
+    stateId: z.string().nullable().optional(),
+    divisionId: z.string().nullable().optional(),
+    salesAreaId: z.string().nullable().optional(),
+    outletId: z.string().nullable().optional(),
+  }).optional(),
 });
 
-export const UserUpdateSchema = z.object({
-  name: z.string().min(2).optional(),
-  email: z.string().email().optional(),
+export const UpdateUserSchema = z.object({
+  name: z.string().min(2).trim().optional(),
   phone: z.string().min(10).optional(),
-  roleCodes: z.array(RoleCodeSchema).optional(),
   status: z.enum(['ACTIVE', 'INACTIVE', 'SUSPENDED']).optional(),
 });
 
+export const UserCreateSchema = CreateUserSchema;
+export const UserUpdateSchema = UpdateUserSchema;
 export const UserStatusSchema = z.object({
   status: z.enum(['ACTIVE', 'INACTIVE', 'SUSPENDED']),
 });
 
-export const StateSchema = z.object({
-  code: z.string().min(2, 'State code required').max(10),
-  name: z.string().min(2, 'State name required'),
+export const CreateStateSchema = z.object({
+  code: z.string().min(2).max(10).trim().toUpperCase(),
+  name: z.string().min(2).trim(),
   status: z.enum(['ACTIVE', 'INACTIVE']).default('ACTIVE'),
 });
+export const StateSchema = CreateStateSchema;
 
-export const DivisionSchema = z.object({
+export const CreateDivisionSchema = z.object({
   stateId: z.string().min(1, 'State ID required'),
-  code: z.string().min(2, 'Division code required').max(10),
-  name: z.string().min(2, 'Division name required'),
+  code: z.string().min(2).max(10).trim().toUpperCase(),
+  name: z.string().min(2).trim(),
   status: z.enum(['ACTIVE', 'INACTIVE']).default('ACTIVE'),
 });
+export const DivisionSchema = CreateDivisionSchema;
 
-export const SalesAreaSchema = z.object({
+export const CreateSalesAreaSchema = z.object({
   divisionId: z.string().min(1, 'Division ID required'),
-  code: z.string().min(2, 'Sales area code required').max(10),
-  name: z.string().min(2, 'Sales area name required'),
+  code: z.string().min(2).max(10).trim().toUpperCase(),
+  name: z.string().min(2).trim(),
   status: z.enum(['ACTIVE', 'INACTIVE']).default('ACTIVE'),
 });
+export const SalesAreaSchema = CreateSalesAreaSchema;
 
 export const RetailOutletSchema = z.object({
-  roCode: z.string().min(3, 'RO Code must be at least 3 characters'),
-  name: z.string().min(2, 'Outlet name required'),
-  outletType: z.enum(['COCO', 'CODO', 'A_SITE']),
-  stateId: z.string().min(1, 'State is required'),
-  divisionId: z.string().min(1, 'Division is required'),
-  salesAreaId: z.string().min(1, 'Sales Area is required'),
-  address: z.string().min(5, 'Address required'),
-  city: z.string().min(2, 'City required'),
-  district: z.string().min(2, 'District required'),
-  pincode: z.string().length(6, 'Pincode must be 6 digits'),
-  latitude: z.number().nullable().optional(),
-  longitude: z.number().nullable().optional(),
+  roCode: z.string().min(3).trim().toUpperCase(),
+  name: z.string().min(2).trim(),
+  outletType: z.enum(['A_SITE', 'COCO', 'CODO']).default('A_SITE'),
+  category: z.enum(['A_SITE', 'B_SITE', 'COCO', 'CORO', 'CODO']).optional(),
+  stateId: z.string().min(1, 'State ID required'),
+  divisionId: z.string().min(1, 'Division ID required'),
+  salesAreaId: z.string().min(1, 'Sales Area ID required'),
+  address: z.string().min(1, 'Address required').trim().default('Main Road'),
+  location: z.string().min(1, 'Location required').trim().optional(),
+  city: z.string().min(1, 'City required').trim().default('City'),
+  district: z.string().min(1, 'District required').trim().default('District'),
+  pincode: z.string().trim().default('700001'),
+  latitude: z.number().optional().nullable(),
+  longitude: z.number().optional().nullable(),
   status: z.enum(['ACTIVE', 'INACTIVE']).default('ACTIVE'),
 });
+export const CreateRetailOutletSchema = RetailOutletSchema;
+
+export const UpdateRetailOutletSchema = z.object({
+  name: z.string().min(2).trim().optional(),
+  outletType: z.enum(['A_SITE', 'B_SITE', 'COCO', 'CORO', 'CODO']).optional(),
+  category: z.enum(['A_SITE', 'B_SITE', 'COCO', 'CORO', 'CODO']).optional(),
+  address: z.string().min(1).trim().optional(),
+  location: z.string().min(1).trim().optional(),
+  city: z.string().min(1).trim().optional(),
+  district: z.string().min(1).trim().optional(),
+  pincode: z.string().trim().optional(),
+  latitude: z.number().optional().nullable(),
+  longitude: z.number().optional().nullable(),
+  status: z.enum(['ACTIVE', 'INACTIVE']).optional(),
+});
+export const RetailOutletUpdateSchema = UpdateRetailOutletSchema;
 
 export const OutletUserAssignmentSchema = z.object({
   outletId: z.string().min(1, 'Outlet ID required'),
   userId: z.string().min(1, 'User ID required'),
-  assignmentType: z.enum(['DEALER', 'CSP', 'INSPECTOR']),
+  assignmentType: z.enum(['DEALER', 'CSP', 'INSPECTOR']).default('DEALER'),
   effectiveFrom: z.string().optional(),
   effectiveTo: z.string().nullable().optional(),
+  isActive: z.boolean().default(true),
+  isPrimary: z.boolean().default(false),
 });
 
-// Strict Discriminated Union for User Scope Assignment
+export const AssignScopeSchema = z.object({
+  userId: z.string().min(1, 'User ID required'),
+  scopeLevel: ScopeLevelSchema,
+  stateId: z.string().nullable().optional(),
+  divisionId: z.string().nullable().optional(),
+  salesAreaId: z.string().nullable().optional(),
+  outletId: z.string().nullable().optional(),
+});
+
 export const GlobalScopeSchema = z.object({
   userId: z.string().min(1, 'User ID required'),
   scopeLevel: z.literal('GLOBAL'),
@@ -172,7 +192,7 @@ export const DocumentMetadataSchema = z.object({
 });
 
 // ==========================================
-// Phase 2A: Pump Operations & Shift Foundation
+// Phase 2A Hardened: Pump Operations & Shift
 // ==========================================
 
 export const ProductSchema = z.object({
@@ -267,19 +287,48 @@ export const OpenShiftSchema = z.object({
   notes: z.string().trim().nullable().optional(),
 });
 
+const QuantityStringOrNumber = z.union([z.string(), z.number()]).refine(val => {
+  try {
+    parseMilliunits(val);
+    return true;
+  } catch {
+    return false;
+  }
+}, { message: 'Invalid decimal quantity. Max 3 decimal places and non-negative.' });
+
 export const MeterReadingSchema = z.object({
   nozzleId: z.string().min(1, 'Nozzle ID is required'),
-  openingTotalizer: z.number().min(0, 'Opening totalizer must be non-negative'),
-  closingTotalizer: z.number().min(0, 'Closing totalizer must be non-negative'),
-  testingQuantity: z.number().min(0, 'Testing quantity must be non-negative').default(0),
+  openingTotalizer: QuantityStringOrNumber,
+  closingTotalizer: QuantityStringOrNumber,
+  testingQuantity: QuantityStringOrNumber.default('0.000'),
   varianceReason: z.string().trim().nullable().optional(),
-}).refine(data => data.closingTotalizer >= data.openingTotalizer, {
+}).refine(data => {
+  try {
+    const op = parseMilliunits(data.openingTotalizer);
+    const cl = parseMilliunits(data.closingTotalizer);
+    return cl >= op;
+  } catch {
+    return true;
+  }
+}, {
   message: 'Closing totalizer must be greater than or equal to opening totalizer',
   path: ['closingTotalizer'],
+}).refine(data => {
+  try {
+    const op = parseMilliunits(data.openingTotalizer);
+    const cl = parseMilliunits(data.closingTotalizer);
+    const test = parseMilliunits(data.testingQuantity);
+    const gross = cl - op;
+    return test <= gross;
+  } catch {
+    return true;
+  }
+}, {
+  message: 'Testing quantity cannot exceed gross sales quantity',
+  path: ['testingQuantity'],
 });
 
 export const NozzleUnavailabilitySchema = z.object({
   nozzleId: z.string().min(1, 'Nozzle ID is required'),
   reason: z.string().min(3, 'A valid reason (minimum 3 characters) is required').trim(),
 });
-

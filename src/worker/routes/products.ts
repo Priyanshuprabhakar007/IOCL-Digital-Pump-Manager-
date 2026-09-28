@@ -24,16 +24,15 @@ products.get('/', requirePermission(PERMISSIONS.PRODUCTS_READ) as any, async (c:
   });
 });
 
-// Helper check: Only GLOBAL authorized administrators may manage global product masters
+// Helper check: Only GLOBAL authorized administrators (ADMIN role + GLOBAL scope) may manage global product masters
 function isGlobalProductAdmin(c: AppContext): boolean {
   const userCtx = c.var.user;
   if (!userCtx) return false;
-  if (userCtx.roles.includes('ADMIN') || userCtx.isGlobalScope) return true;
-  return false;
+  return userCtx.roles.includes('ADMIN') && userCtx.isGlobalScope === true;
 }
 
 // POST /api/v1/products - Create product (GLOBAL Admin only)
-products.post('/', requirePermission(PERMISSIONS.PRODUCTS_WRITE) as any, async (c: AppContext) => {
+products.post('/', requirePermission(PERMISSIONS.PRODUCTS_MANAGE_GLOBAL) as any, async (c: AppContext) => {
   if (!isGlobalProductAdmin(c)) {
     return c.json({
       success: false,
@@ -110,7 +109,7 @@ products.post('/', requirePermission(PERMISSIONS.PRODUCTS_WRITE) as any, async (
 });
 
 // PUT /api/v1/products/:id - Update product (GLOBAL Admin only)
-products.put('/:id', requirePermission(PERMISSIONS.PRODUCTS_WRITE) as any, async (c: AppContext) => {
+products.put('/:id', requirePermission(PERMISSIONS.PRODUCTS_MANAGE_GLOBAL) as any, async (c: AppContext) => {
   if (!isGlobalProductAdmin(c)) {
     return c.json({
       success: false,
@@ -185,7 +184,7 @@ products.put('/:id', requirePermission(PERMISSIONS.PRODUCTS_WRITE) as any, async
 });
 
 // PATCH /api/v1/products/:id/status - Toggle status (GLOBAL Admin only)
-products.patch('/:id/status', requirePermission(PERMISSIONS.PRODUCTS_WRITE) as any, async (c: AppContext) => {
+products.patch('/:id/status', requirePermission(PERMISSIONS.PRODUCTS_MANAGE_GLOBAL) as any, async (c: AppContext) => {
   if (!isGlobalProductAdmin(c)) {
     return c.json({
       success: false,

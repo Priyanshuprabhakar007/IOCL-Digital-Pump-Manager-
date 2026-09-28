@@ -27,6 +27,7 @@ import {
   AlertTriangle,
   FileText,
 } from 'lucide-react';
+import { parseMilliunits, formatMilliunits } from '../../shared/precision';
 
 export const ShiftOperationsPage: React.FC = () => {
   const { userCtx } = useAuth();
@@ -130,13 +131,14 @@ export const ShiftOperationsPage: React.FC = () => {
     }
     if (gridRes.success && gridRes.data) {
       setGridItems(gridRes.data);
-      // Initialize inputs map
+      // Initialize inputs map with exact 3-decimal strings
       const inputs: Record<string, any> = {};
       gridRes.data.forEach(item => {
-        inputs[item.nozzle.id] = {
-          opening: item.reading ? String(item.reading.openingTotalizer) : String(item.suggestedOpeningTotalizer || 0),
-          closing: item.reading ? String(item.reading.closingTotalizer) : '',
-          testing: item.reading ? String(item.reading.testingQuantity) : '0',
+        const nId = item.snapshot.nozzleId;
+        inputs[nId] = {
+          opening: item.reading ? item.reading.openingTotalizerStr : item.suggestedOpeningTotalizer,
+          closing: item.reading ? item.reading.closingTotalizerStr : '',
+          testing: item.reading ? item.reading.testingQuantityStr : '0.000',
           varianceReason: item.reading?.varianceReason || '',
         };
       });
@@ -171,7 +173,7 @@ export const ShiftOperationsPage: React.FC = () => {
 
     if (res.success && res.data) {
       setOpenShiftModal(false);
-      setActionSuccess(`Operational Shift for ${newShiftDate} opened successfully`);
+      setActionSuccess(`Operational Shift for ${newShiftDate} opened successfully with nozzle snapshot`);
       setTimeout(() => setActionSuccess(null), 4000);
       setSelectedShiftId(res.data.id);
       loadOutletShifts();
@@ -184,12 +186,12 @@ export const ShiftOperationsPage: React.FC = () => {
     const input = readingInputs[nozzleId];
     if (!input) return;
 
-    const opening = parseFloat(input.opening);
-    const closing = parseFloat(input.closing);
-    const testing = parseFloat(input.testing || '0');
-
-    if (isNaN(opening) || isNaN(closing) || closing < opening) {
-      setActionError('Closing totalizer must be greater than or equal to opening totalizer');
+    try {
+      parseMilliunits(input.opening);
+      parseMilliunits(input.closing);
+      parseMilliunits(input.testing || '0.000');
+    } catch (err: any) {
+      setActionError(err.message || 'Invalid totalizer reading format. Use max 3 decimal places.');
       return;
     }
 
@@ -197,15 +199,15 @@ export const ShiftOperationsPage: React.FC = () => {
       method: 'POST',
       body: JSON.stringify({
         nozzleId,
-        openingTotalizer: opening,
-        closingTotalizer: closing,
-        testingQuantity: isNaN(testing) ? 0 : testing,
+        openingTotalizer: input.opening.trim(),
+        closingTotalizer: input.closing.trim(),
+        testingQuantity: input.testing ? input.testing.trim() : '0.000',
         varianceReason: input.varianceReason ? input.varianceReason.trim() : null,
       }),
     });
 
     if (res.success) {
-      setActionSuccess('Reading recorded');
+      setActionSuccess('Reading recorded successfully');
       setTimeout(() => setActionSuccess(null), 3000);
       loadShiftWorkspace();
     } else {
@@ -221,7 +223,7 @@ export const ShiftOperationsPage: React.FC = () => {
     const res = await apiFetch(`/api/v1/shifts/${selectedShiftId}/nozzle-unavailability`, {
       method: 'POST',
       body: JSON.stringify({
-        nozzleId: unavailModalNozzle.nozzle.id,
+        nozzleId: unavailModalNozzle.snapshot.nozzleId,
         reason: unavailReason.trim(),
       }),
     });
@@ -276,7 +278,7 @@ export const ShiftOperationsPage: React.FC = () => {
               </h1>
             </div>
             <p className="text-xs text-slate-400 mt-1">
-              Authoritative nozzle meter entry, continuity verification, testing calibration deduction, and sales reconciliation
+              Historical snapshot integrity, exact 3-decimal integer precision, testing calibration deduction, and unit-accurate summaries
             </p>
           </div>
 
@@ -422,10 +424,10 @@ export const ShiftOperationsPage: React.FC = () => {
               <div className="flex items-center justify-between">
                 <div>
                   <h2 className="text-sm font-bold text-white font-mono uppercase tracking-wider">
-                    Authoritative Nozzle Meter Readings
+                    Authoritative Nozzle Meter Readings (Shift Snapshot)
                   </h2>
                   <p className="text-xs text-slate-400">
-                    Gross = Closing - Opening. Net = Gross - Testing. Opening variances are audited.
+                    Gross = Closing - Opening. Net = Gross - Testing. Exact 3-decimal precision (.000).
                   </p>
                 </div>
                 {!isShiftOpen && (
@@ -442,27 +444,41 @@ export const ShiftOperationsPage: React.FC = () => {
                     <tr>
                       <th className="py-3 px-3">Nozzle / MPD</th>
                       <th className="py-3 px-3">Fuel Grade</th>
+                      <th className="py-3 px-3">Unit</th>
                       <th className="py-3 px-3">Previous Closing</th>
                       <th className="py-3 px-3">Current Opening</th>
                       <th className="py-3 px-3">Closing Reading</th>
-                      <th className="py-3 px-3">Testing Qty (L)</th>
+                      <th className="py-3 px-3">Testing Qty</th>
                       <th className="py-3 px-3">Gross Sales</th>
-                      <th className="py-3 px-3">Net Sales (L)</th>
+                      <th className="py-3 px-3">Net Sales</th>
                       <th className="py-3 px-3">Status / Action</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800/60">
                     {gridItems.map((item) => {
-                      const nId = item.nozzle.id;
-                      const input = readingInputs[nId] || { opening: '0', closing: '', testing: '0', varianceReason: '' };
-                      const openingNum = parseFloat(input.opening) || 0;
-                      const closingNum = parseFloat(input.closing) || 0;
-                      const testingNum = parseFloat(input.testing) || 0;
+                      const nId = item.snapshot.nozzleId;
+                      const input = readingInputs[nId] || { opening: '0.000', closing: '', testing: '0.000', varianceReason: '' };
+                      
+                      let calculatedGross = '0.000';
+                      let calculatedNet = '0.000';
+                      let hasVariance = false;
 
-                      const calculatedGross = closingNum >= openingNum ? Math.round((closingNum - openingNum) * 1000) / 1000 : 0;
-                      const calculatedNet = Math.max(0, Math.round((calculatedGross - testingNum) * 1000) / 1000);
+                      try {
+                        const opMilli = parseMilliunits(input.opening || '0.000');
+                        const clMilli = input.closing ? parseMilliunits(input.closing) : opMilli;
+                        const testMilli = input.testing ? parseMilliunits(input.testing) : 0;
+                        const grossMilli = clMilli >= opMilli ? clMilli - opMilli : 0;
+                        const netMilli = Math.max(0, grossMilli - testMilli);
 
-                      const hasVariance = item.hasPreviousShift && Math.abs(openingNum - item.suggestedOpeningTotalizer) > 0.001;
+                        calculatedGross = formatMilliunits(grossMilli);
+                        calculatedNet = formatMilliunits(netMilli);
+
+                        const suggestedMilli = parseMilliunits(item.suggestedOpeningTotalizer || '0.000');
+                        hasVariance = item.hasPreviousShift && (opMilli !== suggestedMilli);
+                      } catch {
+                        // ignore parse errors during active typing
+                      }
+
                       const isRecorded = Boolean(item.reading);
                       const isUnavailable = Boolean(item.unavailability);
 
@@ -470,27 +486,31 @@ export const ShiftOperationsPage: React.FC = () => {
                         <tr key={nId} className="hover:bg-slate-800/30 transition-colors">
                           <td className="py-3 px-3">
                             <div className="font-bold text-white font-mono">
-                              Nozzle {item.nozzle.nozzleNumber}
+                              Nozzle {item.snapshot.nozzleNumber}
                             </div>
                             <div className="text-[10px] text-slate-500">
-                              MPD #{item.nozzle.dispenserNumber}
+                              MPD #{item.snapshot.dispenserNumber} ({item.snapshot.dispenserName})
                             </div>
                           </td>
 
                           <td className="py-3 px-3">
                             <span className="px-2 py-0.5 rounded font-mono font-bold text-[10px] bg-amber-500/10 text-amber-400 border border-amber-500/20">
-                              {item.nozzle.productCode || item.nozzle.productName}
+                              {item.snapshot.productCode || item.snapshot.productName}
                             </span>
                           </td>
 
+                          <td className="py-3 px-3 font-mono text-[10px] text-slate-400 font-bold">
+                            {item.snapshot.productUnit}
+                          </td>
+
                           <td className="py-3 px-3 font-mono text-slate-400">
-                            {item.hasPreviousShift ? item.suggestedOpeningTotalizer.toFixed(2) : 'Initial (0.00)'}
+                            {item.hasPreviousShift ? item.suggestedOpeningTotalizer : 'Initial (0.000)'}
                           </td>
 
                           <td className="py-3 px-3">
                             <input
-                              type="number"
-                              step="0.001"
+                              type="text"
+                              inputMode="decimal"
                               disabled={!isShiftOpen || isUnavailable}
                               value={input.opening}
                               onChange={(e) => {
@@ -499,7 +519,7 @@ export const ShiftOperationsPage: React.FC = () => {
                                   [nId]: { ...prev[nId], opening: e.target.value },
                                 }));
                               }}
-                              className={`w-24 bg-slate-950 border rounded-lg px-2 py-1 text-xs font-mono text-white focus:outline-none ${
+                              className={`w-28 bg-slate-950 border rounded-lg px-2 py-1 text-xs font-mono text-white focus:outline-none ${
                                 hasVariance ? 'border-amber-500 text-amber-300' : 'border-slate-700'
                               } disabled:opacity-50`}
                             />
@@ -525,8 +545,8 @@ export const ShiftOperationsPage: React.FC = () => {
 
                           <td className="py-3 px-3">
                             <input
-                              type="number"
-                              step="0.001"
+                              type="text"
+                              inputMode="decimal"
                               disabled={!isShiftOpen || isUnavailable}
                               value={input.closing}
                               onChange={(e) => {
@@ -535,15 +555,15 @@ export const ShiftOperationsPage: React.FC = () => {
                                   [nId]: { ...prev[nId], closing: e.target.value },
                                 }));
                               }}
-                              placeholder="0.00"
-                              className="w-24 bg-slate-950 border border-slate-700 rounded-lg px-2 py-1 text-xs font-mono text-white focus:outline-none focus:border-orange-500 disabled:opacity-50"
+                              placeholder="0.000"
+                              className="w-28 bg-slate-950 border border-slate-700 rounded-lg px-2 py-1 text-xs font-mono text-white focus:outline-none focus:border-orange-500 disabled:opacity-50"
                             />
                           </td>
 
                           <td className="py-3 px-3">
                             <input
-                              type="number"
-                              step="0.001"
+                              type="text"
+                              inputMode="decimal"
                               disabled={!isShiftOpen || isUnavailable}
                               value={input.testing}
                               onChange={(e) => {
@@ -552,17 +572,17 @@ export const ShiftOperationsPage: React.FC = () => {
                                   [nId]: { ...prev[nId], testing: e.target.value },
                                 }));
                               }}
-                              placeholder="0"
-                              className="w-16 bg-slate-950 border border-slate-700 rounded-lg px-2 py-1 text-xs font-mono text-white focus:outline-none focus:border-orange-500 disabled:opacity-50"
+                              placeholder="0.000"
+                              className="w-20 bg-slate-950 border border-slate-700 rounded-lg px-2 py-1 text-xs font-mono text-white focus:outline-none focus:border-orange-500 disabled:opacity-50"
                             />
                           </td>
 
                           <td className="py-3 px-3 font-mono text-slate-300 font-bold">
-                            {isUnavailable ? '—' : calculatedGross.toFixed(2)}
+                            {isUnavailable ? '—' : calculatedGross}
                           </td>
 
                           <td className="py-3 px-3 font-mono text-emerald-400 font-bold text-sm">
-                            {isUnavailable ? '—' : calculatedNet.toFixed(2)}
+                            {isUnavailable ? '—' : calculatedNet}
                           </td>
 
                           <td className="py-3 px-3">
@@ -624,54 +644,54 @@ export const ShiftOperationsPage: React.FC = () => {
           {/* VIEW 2: SALES SUMMARY */}
           {activeView === 'summary' && salesSummary && (
             <div className="space-y-6">
-              {/* Grand Totals Cards */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl shadow-black/20">
-                  <span className="text-slate-500 text-[10px] font-mono uppercase tracking-wider block">
-                    Total Gross Sales
-                  </span>
-                  <div className="text-2xl font-black text-white font-mono mt-1">
-                    {salesSummary.totalOutletQuantity.grossQuantity.toLocaleString()} L
+              {/* Grand Totals Cards by Physical Unit */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                {salesSummary.totalsByUnit.map(t => (
+                  <div key={t.unit} className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl shadow-black/20 space-y-3">
+                    <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                      <span className="text-orange-400 text-xs font-mono font-bold uppercase tracking-wider">
+                        Total {t.unit} Output
+                      </span>
+                      <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-slate-800 text-slate-300">
+                        {t.unit}
+                      </span>
+                    </div>
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between text-xs font-mono">
+                        <span className="text-slate-400">Gross Sales:</span>
+                        <span className="text-white font-bold">{t.grossQuantity} {t.unit}</span>
+                      </div>
+                      <div className="flex items-center justify-between text-xs font-mono">
+                        <span className="text-slate-400">Testing Deductions:</span>
+                        <span className="text-amber-400 font-bold">{t.testingQuantity} {t.unit}</span>
+                      </div>
+                      <div className="flex items-center justify-between text-sm font-mono pt-2 border-t border-slate-800/80">
+                        <span className="text-slate-300 font-bold">Net Billable Sales:</span>
+                        <span className="text-emerald-400 font-black text-base">{t.netQuantity} {t.unit}</span>
+                      </div>
+                    </div>
                   </div>
-                </div>
-
-                <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl shadow-black/20">
-                  <span className="text-slate-500 text-[10px] font-mono uppercase tracking-wider block">
-                    Testing & Calibration Deductions
-                  </span>
-                  <div className="text-2xl font-black text-amber-400 font-mono mt-1">
-                    {salesSummary.totalOutletQuantity.testingQuantity.toLocaleString()} L
-                  </div>
-                </div>
-
-                <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl shadow-black/20">
-                  <span className="text-slate-500 text-[10px] font-mono uppercase tracking-wider block">
-                    Final Net Fuel Sales (Billable)
-                  </span>
-                  <div className="text-2xl font-black text-emerald-400 font-mono mt-1">
-                    {salesSummary.totalOutletQuantity.netQuantity.toLocaleString()} L
-                  </div>
-                </div>
+                ))}
               </div>
 
-              {/* Breakdown by Product */}
+              {/* Breakdown by Product Grade */}
               <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5">
                 <h3 className="text-sm font-bold text-white uppercase tracking-wider font-mono mb-3">
-                  Fuel Sales by Product Grade
+                  Fuel Sales by Product Grade (Snapshot Attribution)
                 </h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                   {salesSummary.byProduct.map(p => (
                     <div key={p.productId} className="bg-slate-950 border border-slate-800/80 rounded-xl p-4">
                       <div className="flex items-center justify-between">
                         <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-slate-800 text-orange-400 border border-slate-700">
-                          {p.category}
+                          {p.productCategory}
                         </span>
-                        <span className="text-xs text-slate-400 font-mono">Gross: {p.grossQuantity} L</span>
+                        <span className="text-xs text-slate-400 font-mono">Gross: {p.grossQuantity} {p.unit}</span>
                       </div>
                       <div className="text-sm font-bold text-white mt-2">{p.productName}</div>
                       <div className="mt-3 pt-2 border-t border-slate-800/80 flex items-center justify-between">
                         <span className="text-[11px] text-slate-500 font-mono">NET DISPENSED</span>
-                        <span className="text-base font-bold text-emerald-400 font-mono">{p.netQuantity.toLocaleString()} L</span>
+                        <span className="text-base font-bold text-emerald-400 font-mono">{p.netQuantity} {p.unit}</span>
                       </div>
                     </div>
                   ))}
@@ -681,21 +701,18 @@ export const ShiftOperationsPage: React.FC = () => {
               {/* Breakdown by Dispenser */}
               <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5">
                 <h3 className="text-sm font-bold text-white uppercase tracking-wider font-mono mb-3">
-                  Dispenser Performance Summary
+                  Dispenser Unit Performance Summary
                 </h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   {salesSummary.byDispenser.map(d => (
-                    <div key={d.dispenserId} className="bg-slate-950 border border-slate-800 rounded-xl p-4 flex items-center justify-between">
-                      <div>
-                        <div className="font-bold text-white font-mono">{d.name}</div>
-                        <div className="text-xs text-slate-400 font-mono mt-0.5">
-                          Gross: {d.grossQuantity} L • Testing: {d.testingQuantity} L
+                    <div key={d.dispenserId} className="bg-slate-950 border border-slate-800 rounded-xl p-4 space-y-2">
+                      <div className="font-bold text-white font-mono">{d.name}</div>
+                      {d.totalsByUnit.map(u => (
+                        <div key={u.unit} className="flex items-center justify-between text-xs font-mono border-t border-slate-800/60 pt-1.5">
+                          <span className="text-slate-400">Gross: {u.grossQuantity} {u.unit} (Test: {u.testingQuantity})</span>
+                          <span className="text-emerald-400 font-bold">{u.netQuantity} {u.unit}</span>
                         </div>
-                      </div>
-                      <div className="text-right">
-                        <span className="text-slate-500 text-[10px] font-mono block">NET TOTAL</span>
-                        <span className="text-base font-bold text-emerald-400 font-mono">{d.netQuantity.toLocaleString()} L</span>
-                      </div>
+                      ))}
                     </div>
                   ))}
                 </div>
@@ -712,7 +729,7 @@ export const ShiftOperationsPage: React.FC = () => {
           <div className="relative z-10 w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl">
             <h2 className="text-lg font-bold text-white mb-2">Open Daily Operational Shift</h2>
             <p className="text-xs text-slate-400 mb-4">
-              Initialize a shift instance for {selectedOutlet?.roCode} ({selectedOutlet?.name})
+              Initialize shift instance & create immutable nozzle snapshot for {selectedOutlet?.roCode}
             </p>
 
             {modalError && <div className="p-3 mb-3 bg-rose-500/10 text-rose-400 text-xs rounded-xl">{modalError}</div>}
@@ -760,7 +777,7 @@ export const ShiftOperationsPage: React.FC = () => {
                   Cancel
                 </button>
                 <button type="submit" disabled={modalSubmitting} className="px-4 py-2 bg-orange-500 text-white rounded-xl text-xs font-bold shadow-md shadow-orange-500/20">
-                  {modalSubmitting ? 'Opening...' : 'Confirm Open Shift'}
+                  {modalSubmitting ? 'Opening & Capturing Snapshot...' : 'Confirm Open Shift'}
                 </button>
               </div>
             </form>
@@ -777,7 +794,7 @@ export const ShiftOperationsPage: React.FC = () => {
               Mark Nozzle Unavailable
             </h2>
             <p className="text-xs text-slate-400 mb-4">
-              Dispenser #{unavailModalNozzle.nozzle.dispenserNumber} - Nozzle #{unavailModalNozzle.nozzle.nozzleNumber} ({unavailModalNozzle.nozzle.productCode})
+              Dispenser #{unavailModalNozzle.snapshot.dispenserNumber} - Nozzle #{unavailModalNozzle.snapshot.nozzleNumber} ({unavailModalNozzle.snapshot.productCode})
             </p>
 
             <form onSubmit={handleRecordUnavailability} className="space-y-4">
@@ -822,8 +839,8 @@ export const ShiftOperationsPage: React.FC = () => {
             </div>
 
             <div className="text-xs text-slate-300 space-y-2 bg-slate-950 p-4 rounded-xl border border-slate-800/80 font-mono">
-              <p>• Every active nozzle must have a recorded reading or approved unavailability.</p>
-              <p>• Once CLOSED, normal meter totalizers and testing quantities cannot be altered (HTTP 409 SHIFT_CLOSED).</p>
+              <p>• Every snapshot nozzle must have a recorded reading or approved unavailability.</p>
+              <p>• Once CLOSED, meter totalizers and testing quantities cannot be altered (HTTP 409 SHIFT_CLOSED).</p>
             </div>
 
             <div className="flex justify-end gap-2 pt-2">

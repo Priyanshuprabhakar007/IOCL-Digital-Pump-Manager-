@@ -9,28 +9,15 @@ import {
   Nozzle,
   ShiftTemplate,
   OperationalShift,
+  OperationalShiftNozzleSnapshot,
   NozzleMeterReading,
   NozzleUnavailabilityRecord,
   ShiftSalesSummary,
   ShiftEntryGridItem,
+  UnitQuantitySummary,
+  ProductUnit,
 } from '../../shared/types';
-
-// Precise fuel arithmetic: 3 decimal places (e.g. 123.456 L)
-const PRECISION = 1000;
-
-export function round3(val: number): number {
-  return Math.round((val + Number.EPSILON) * PRECISION) / PRECISION;
-}
-
-export function calcGrossQuantity(closing: number, opening: number): number {
-  const scaled = Math.round(closing * PRECISION) - Math.round(opening * PRECISION);
-  return scaled / PRECISION;
-}
-
-export function calcNetQuantity(gross: number, testing: number): number {
-  const scaled = Math.round(gross * PRECISION) - Math.round(testing * PRECISION);
-  return scaled / PRECISION;
-}
+import { parseMilliunits, formatMilliunits, MILLIUNIT_SCALE } from '../../shared/precision';
 
 export class PumpRepository {
   constructor(private db: AppDatabase) {}
@@ -109,11 +96,24 @@ export class PumpRepository {
 
   async findOutletProduct(outletId: string, productId: string): Promise<OutletProduct | null> {
     const [row] = await this.db
-      .select()
+      .select({
+        mapping: schema.outletProducts,
+        product: schema.products,
+      })
       .from(schema.outletProducts)
+      .innerJoin(schema.products, eq(schema.outletProducts.productId, schema.products.id))
       .where(and(eq(schema.outletProducts.outletId, outletId), eq(schema.outletProducts.productId, productId)));
 
-    return (row as OutletProduct) || null;
+    if (!row) return null;
+    return {
+      id: row.mapping.id,
+      outletId: row.mapping.outletId,
+      productId: row.mapping.productId,
+      status: row.mapping.status as 'ACTIVE' | 'INACTIVE',
+      createdAt: row.mapping.createdAt,
+      createdBy: row.mapping.createdBy,
+      product: row.product as Product,
+    };
   }
 
   async mapProductToOutlet(data: {
@@ -125,8 +125,7 @@ export class PumpRepository {
     createdBy: string;
   }): Promise<OutletProduct> {
     await this.db.insert(schema.outletProducts).values(data);
-    const mapped = await this.findOutletProduct(data.outletId, data.productId);
-    return mapped!;
+    return (await this.findOutletProduct(data.outletId, data.productId))!;
   }
 
   async updateOutletProductStatus(outletId: string, productId: string, status: 'ACTIVE' | 'INACTIVE'): Promise<OutletProduct | null> {
@@ -135,6 +134,23 @@ export class PumpRepository {
       .set({ status })
       .where(and(eq(schema.outletProducts.outletId, outletId), eq(schema.outletProducts.productId, productId)));
     return this.findOutletProduct(outletId, productId);
+  }
+
+  async findActiveTanksAndNozzlesForOutletProduct(outletId: string, productId: string): Promise<{ tanksCount: number; nozzlesCount: number }> {
+    const [tanksResult] = await this.db
+      .select({ count: sql<number>`count(*)` })
+      .from(schema.tanks)
+      .where(and(eq(schema.tanks.outletId, outletId), eq(schema.tanks.productId, productId), eq(schema.tanks.status, 'ACTIVE')));
+
+    const [nozzlesResult] = await this.db
+      .select({ count: sql<number>`count(*)` })
+      .from(schema.nozzles)
+      .where(and(eq(schema.nozzles.outletId, outletId), eq(schema.nozzles.productId, productId), eq(schema.nozzles.status, 'ACTIVE')));
+
+    return {
+      tanksCount: Number(tanksResult?.count || 0),
+      nozzlesCount: Number(nozzlesResult?.count || 0),
+    };
   }
 
   // ==========================================
@@ -180,11 +196,27 @@ export class PumpRepository {
   }
 
   async findTankByOutletAndNumber(outletId: string, tankNumber: number): Promise<Tank | null> {
-    const [tank] = await this.db
-      .select()
+    const [row] = await this.db
+      .select({
+        tank: schema.tanks,
+        product: schema.products,
+      })
       .from(schema.tanks)
+      .innerJoin(schema.products, eq(schema.tanks.productId, schema.products.id))
       .where(and(eq(schema.tanks.outletId, outletId), eq(schema.tanks.tankNumber, tankNumber)));
-    return (tank as Tank) || null;
+
+    if (!row) return null;
+    return {
+      ...row.tank,
+      status: row.tank.status as any,
+      productName: row.product.name,
+      productCode: row.product.code,
+    };
+  }
+
+  async findNozzlesReferencingTank(tankId: string): Promise<Nozzle[]> {
+    const rows = await this.db.select().from(schema.nozzles).where(eq(schema.nozzles.tankId, tankId));
+    return rows as Nozzle[];
   }
 
   async createTank(data: {
@@ -480,7 +512,7 @@ export class PumpRepository {
   }
 
   // ==========================================
-  // 7. OPERATIONAL SHIFTS
+  // 7. OPERATIONAL SHIFTS & SNAPSHOTS
   // ==========================================
 
   async listOperationalShiftsByOutlet(outletId: string, limit = 50): Promise<OperationalShift[]> {
@@ -540,6 +572,14 @@ export class PumpRepository {
     };
   }
 
+  async findActiveOpenShift(outletId: string): Promise<OperationalShift | null> {
+    const [row] = await this.db
+      .select()
+      .from(schema.operationalShifts)
+      .where(and(eq(schema.operationalShifts.outletId, outletId), eq(schema.operationalShifts.status, 'OPEN')));
+    return (row as OperationalShift) || null;
+  }
+
   async findExistingShift(outletId: string, shiftTemplateId: string, businessDate: string): Promise<OperationalShift | null> {
     const [s] = await this.db
       .select()
@@ -554,7 +594,10 @@ export class PumpRepository {
     return (s as OperationalShift) || null;
   }
 
-  async openOperationalShift(data: {
+  /**
+   * Opens an operational shift and snapshots all participating active nozzles atomically.
+   */
+  async openOperationalShiftWithSnapshot(data: {
     id: string;
     outletId: string;
     shiftTemplateId: string;
@@ -564,20 +607,99 @@ export class PumpRepository {
     notes?: string | null;
     createdAt: string;
     updatedAt: string;
-  }): Promise<OperationalShift> {
+  }): Promise<{ shift: OperationalShift; snapshotsCount: number }> {
+    // 1. Resolve all participating active nozzles with active dispensers
+    const activeParticipatingNozzles = await this.db
+      .select({
+        nozzle: schema.nozzles,
+        dispenser: schema.dispensers,
+        product: schema.products,
+        tank: schema.tanks,
+      })
+      .from(schema.nozzles)
+      .innerJoin(schema.dispensers, eq(schema.nozzles.dispenserId, schema.dispensers.id))
+      .innerJoin(schema.products, eq(schema.nozzles.productId, schema.products.id))
+      .innerJoin(schema.tanks, eq(schema.nozzles.tankId, schema.tanks.id))
+      .where(
+        and(
+          eq(schema.nozzles.outletId, data.outletId),
+          eq(schema.nozzles.status, 'ACTIVE'),
+          eq(schema.dispensers.status, 'ACTIVE')
+        )
+      );
+
+    // 2. Insert shift record
     await this.db.insert(schema.operationalShifts).values({
-      ...data,
+      id: data.id,
+      outletId: data.outletId,
+      shiftTemplateId: data.shiftTemplateId,
+      businessDate: data.businessDate,
+      startedAt: data.startedAt,
       status: 'OPEN',
+      openedByUserId: data.openedByUserId,
       closedAt: null,
       closedByUserId: null,
       notes: data.notes || null,
+      createdAt: data.createdAt,
+      updatedAt: data.updatedAt,
     });
-    return (await this.findOperationalShiftById(data.id))!;
+
+    // 3. Insert snapshots for each active nozzle
+    if (activeParticipatingNozzles.length > 0) {
+      const snapshotRows = activeParticipatingNozzles.map(n => ({
+        id: `osn-${crypto.randomUUID()}`,
+        operationalShiftId: data.id,
+        outletId: data.outletId,
+        nozzleId: n.nozzle.id,
+        dispenserId: n.dispenser.id,
+        dispenserNumber: n.dispenser.dispenserNumber,
+        dispenserName: n.dispenser.name,
+        nozzleNumber: n.nozzle.nozzleNumber,
+        productId: n.product.id,
+        productCode: n.product.code,
+        productName: n.product.name,
+        productCategory: n.product.category,
+        productUnit: n.product.unit as ProductUnit,
+        tankId: n.tank.id,
+        tankNumber: n.tank.tankNumber,
+        snapshotStatus: 'ACTIVE',
+        createdAt: data.createdAt,
+      }));
+
+      await this.db.insert(schema.operationalShiftNozzles).values(snapshotRows);
+    }
+
+    const shift = (await this.findOperationalShiftById(data.id))!;
+    return { shift, snapshotsCount: activeParticipatingNozzles.length };
   }
 
-  async closeOperationalShift(shiftId: string, closedByUserId: string): Promise<OperationalShift> {
+  async listShiftNozzleSnapshots(shiftId: string): Promise<OperationalShiftNozzleSnapshot[]> {
+    const rows = await this.db
+      .select()
+      .from(schema.operationalShiftNozzles)
+      .where(eq(schema.operationalShiftNozzles.operationalShiftId, shiftId))
+      .orderBy(schema.operationalShiftNozzles.dispenserNumber, schema.operationalShiftNozzles.nozzleNumber);
+
+    return rows as OperationalShiftNozzleSnapshot[];
+  }
+
+  async findShiftNozzleSnapshot(shiftId: string, nozzleId: string): Promise<OperationalShiftNozzleSnapshot | null> {
+    const [row] = await this.db
+      .select()
+      .from(schema.operationalShiftNozzles)
+      .where(
+        and(
+          eq(schema.operationalShiftNozzles.operationalShiftId, shiftId),
+          eq(schema.operationalShiftNozzles.nozzleId, nozzleId)
+        )
+      );
+    return (row as OperationalShiftNozzleSnapshot) || null;
+  }
+
+  async closeOperationalShiftConditional(shiftId: string, closedByUserId: string): Promise<OperationalShift | null> {
     const nowIso = new Date().toISOString();
-    await this.db
+    // Conditional update: only updates if status is currently OPEN
+    const res = await this.db
       .update(schema.operationalShifts)
       .set({
         status: 'CLOSED',
@@ -585,9 +707,9 @@ export class PumpRepository {
         closedByUserId,
         updatedAt: nowIso,
       })
-      .where(eq(schema.operationalShifts.id, shiftId));
+      .where(and(eq(schema.operationalShifts.id, shiftId), eq(schema.operationalShifts.status, 'OPEN')));
 
-    return (await this.findOperationalShiftById(shiftId))!;
+    return this.findOperationalShiftById(shiftId);
   }
 
   // ==========================================
@@ -616,37 +738,71 @@ export class PumpRepository {
       .limit(1);
 
     if (rows.length === 0) return null;
-    return rows[0].reading as NozzleMeterReading;
+    const r = rows[0].reading;
+    const openingMilli = r.openingTotalizerMilliunits ?? parseMilliunits(r.openingTotalizer);
+    const closingMilli = r.closingTotalizerMilliunits ?? parseMilliunits(r.closingTotalizer);
+    const testingMilli = r.testingQuantityMilliunits ?? parseMilliunits(r.testingQuantity);
+    const grossMilli = r.grossSalesQuantityMilliunits ?? (closingMilli - openingMilli);
+    const netMilli = r.netSalesQuantityMilliunits ?? (grossMilli - testingMilli);
+    const varMilli = r.openingVarianceMilliunits ?? parseMilliunits(r.openingVarianceQuantity || 0);
+
+    return {
+      ...r,
+      openingTotalizerMilliunits: openingMilli,
+      closingTotalizerMilliunits: closingMilli,
+      testingQuantityMilliunits: testingMilli,
+      grossSalesQuantityMilliunits: grossMilli,
+      netSalesQuantityMilliunits: netMilli,
+      openingVarianceMilliunits: varMilli,
+      openingTotalizerStr: formatMilliunits(openingMilli),
+      closingTotalizerStr: formatMilliunits(closingMilli),
+      testingQuantityStr: formatMilliunits(testingMilli),
+      grossSalesQuantityStr: formatMilliunits(grossMilli),
+      netSalesQuantityStr: formatMilliunits(netMilli),
+      openingVarianceStr: formatMilliunits(varMilli),
+      hasOpeningVariance: Boolean(r.hasOpeningVariance),
+      openingVarianceQuantity: varMilli / MILLIUNIT_SCALE,
+    };
   }
 
   async listReadingsForShift(shiftId: string): Promise<NozzleMeterReading[]> {
     const rows = await this.db
       .select({
         reading: schema.nozzleMeterReadings,
-        nozzle: schema.nozzles,
-        dispenser: schema.dispensers,
-        product: schema.products,
         user: schema.users,
       })
       .from(schema.nozzleMeterReadings)
-      .innerJoin(schema.nozzles, eq(schema.nozzleMeterReadings.nozzleId, schema.nozzles.id))
-      .innerJoin(schema.dispensers, eq(schema.nozzles.dispenserId, schema.dispensers.id))
-      .innerJoin(schema.products, eq(schema.nozzles.productId, schema.products.id))
       .innerJoin(schema.users, eq(schema.nozzleMeterReadings.recordedByUserId, schema.users.id))
-      .where(eq(schema.nozzleMeterReadings.operationalShiftId, shiftId))
-      .orderBy(schema.dispensers.dispenserNumber, schema.nozzles.nozzleNumber);
+      .where(eq(schema.nozzleMeterReadings.operationalShiftId, shiftId));
 
-    return rows.map(r => ({
-      ...r.reading,
-      hasOpeningVariance: Boolean(r.reading.hasOpeningVariance),
-      openingVarianceQuantity: r.reading.openingVarianceQuantity ?? 0,
-      nozzleNumber: r.nozzle.nozzleNumber,
-      dispenserNumber: r.dispenser.dispenserNumber,
-      dispenserName: r.dispenser.name,
-      productName: r.product.name,
-      productCode: r.product.code,
-      recorderName: r.user.name,
-    }));
+    return rows.map(r => {
+      const rd = r.reading;
+      const openingMilli = rd.openingTotalizerMilliunits ?? parseMilliunits(rd.openingTotalizer);
+      const closingMilli = rd.closingTotalizerMilliunits ?? parseMilliunits(rd.closingTotalizer);
+      const testingMilli = rd.testingQuantityMilliunits ?? parseMilliunits(rd.testingQuantity);
+      const grossMilli = rd.grossSalesQuantityMilliunits ?? (closingMilli - openingMilli);
+      const netMilli = rd.netSalesQuantityMilliunits ?? (grossMilli - testingMilli);
+      const varMilli = rd.openingVarianceMilliunits ?? parseMilliunits(rd.openingVarianceQuantity || 0);
+
+      return {
+        ...rd,
+        openingTotalizerMilliunits: openingMilli,
+        closingTotalizerMilliunits: closingMilli,
+        testingQuantityMilliunits: testingMilli,
+        grossSalesQuantityMilliunits: grossMilli,
+        netSalesQuantityMilliunits: netMilli,
+        openingVarianceMilliunits: varMilli,
+        openingTotalizerStr: formatMilliunits(openingMilli),
+        closingTotalizerStr: formatMilliunits(closingMilli),
+        testingQuantityStr: formatMilliunits(testingMilli),
+        grossSalesQuantityStr: formatMilliunits(grossMilli),
+        netSalesQuantityStr: formatMilliunits(netMilli),
+        openingVarianceStr: formatMilliunits(varMilli),
+        hasOpeningVariance: Boolean(rd.hasOpeningVariance),
+        openingVarianceQuantity: varMilli / MILLIUNIT_SCALE,
+        recorderName: r.user.name,
+      };
+    });
   }
 
   async findReadingByShiftAndNozzle(shiftId: string, nozzleId: string): Promise<NozzleMeterReading | null> {
@@ -660,21 +816,31 @@ export class PumpRepository {
         )
       );
     if (!row) return null;
-    return {
-      ...row,
-      hasOpeningVariance: Boolean(row.hasOpeningVariance),
-      openingVarianceQuantity: row.openingVarianceQuantity ?? 0,
-    } as NozzleMeterReading;
-  }
 
-  async findReadingById(id: string): Promise<NozzleMeterReading | null> {
-    const [row] = await this.db.select().from(schema.nozzleMeterReadings).where(eq(schema.nozzleMeterReadings.id, id));
-    if (!row) return null;
+    const openingMilli = row.openingTotalizerMilliunits ?? parseMilliunits(row.openingTotalizer);
+    const closingMilli = row.closingTotalizerMilliunits ?? parseMilliunits(row.closingTotalizer);
+    const testingMilli = row.testingQuantityMilliunits ?? parseMilliunits(row.testingQuantity);
+    const grossMilli = row.grossSalesQuantityMilliunits ?? (closingMilli - openingMilli);
+    const netMilli = row.netSalesQuantityMilliunits ?? (grossMilli - testingMilli);
+    const varMilli = row.openingVarianceMilliunits ?? parseMilliunits(row.openingVarianceQuantity || 0);
+
     return {
       ...row,
+      openingTotalizerMilliunits: openingMilli,
+      closingTotalizerMilliunits: closingMilli,
+      testingQuantityMilliunits: testingMilli,
+      grossSalesQuantityMilliunits: grossMilli,
+      netSalesQuantityMilliunits: netMilli,
+      openingVarianceMilliunits: varMilli,
+      openingTotalizerStr: formatMilliunits(openingMilli),
+      closingTotalizerStr: formatMilliunits(closingMilli),
+      testingQuantityStr: formatMilliunits(testingMilli),
+      grossSalesQuantityStr: formatMilliunits(grossMilli),
+      netSalesQuantityStr: formatMilliunits(netMilli),
+      openingVarianceStr: formatMilliunits(varMilli),
       hasOpeningVariance: Boolean(row.hasOpeningVariance),
-      openingVarianceQuantity: row.openingVarianceQuantity ?? 0,
-    } as NozzleMeterReading;
+      openingVarianceQuantity: varMilli / MILLIUNIT_SCALE,
+    };
   }
 
   async createReading(data: {
@@ -682,35 +848,83 @@ export class PumpRepository {
     operationalShiftId: string;
     outletId: string;
     nozzleId: string;
-    openingTotalizer: number;
-    closingTotalizer: number;
-    testingQuantity: number;
-    grossSalesQuantity: number;
-    netSalesQuantity: number;
+    openingMilliunits: number;
+    closingMilliunits: number;
+    testingMilliunits: number;
+    grossMilliunits: number;
+    netMilliunits: number;
     recordedByUserId: string;
     hasOpeningVariance: boolean;
-    openingVarianceQuantity: number;
+    openingVarianceMilliunits: number;
     varianceReason: string | null;
     createdAt: string;
     updatedAt: string;
   }): Promise<NozzleMeterReading> {
-    await this.db.insert(schema.nozzleMeterReadings).values(data);
-    return (await this.findReadingById(data.id))!;
+    await this.db.insert(schema.nozzleMeterReadings).values({
+      id: data.id,
+      operationalShiftId: data.operationalShiftId,
+      outletId: data.outletId,
+      nozzleId: data.nozzleId,
+      openingTotalizer: data.openingMilliunits / MILLIUNIT_SCALE,
+      closingTotalizer: data.closingMilliunits / MILLIUNIT_SCALE,
+      testingQuantity: data.testingMilliunits / MILLIUNIT_SCALE,
+      grossSalesQuantity: data.grossMilliunits / MILLIUNIT_SCALE,
+      netSalesQuantity: data.netMilliunits / MILLIUNIT_SCALE,
+      openingTotalizerMilliunits: data.openingMilliunits,
+      closingTotalizerMilliunits: data.closingMilliunits,
+      testingQuantityMilliunits: data.testingMilliunits,
+      grossSalesQuantityMilliunits: data.grossMilliunits,
+      netSalesQuantityMilliunits: data.netMilliunits,
+      recordedByUserId: data.recordedByUserId,
+      hasOpeningVariance: data.hasOpeningVariance,
+      openingVarianceQuantity: data.openingVarianceMilliunits / MILLIUNIT_SCALE,
+      openingVarianceMilliunits: data.openingVarianceMilliunits,
+      varianceReason: data.varianceReason,
+      createdAt: data.createdAt,
+      updatedAt: data.updatedAt,
+    });
+
+    return (await this.findReadingByShiftAndNozzle(data.operationalShiftId, data.nozzleId))!;
   }
 
-  async updateReading(id: string, data: Partial<{
-    openingTotalizer: number;
-    closingTotalizer: number;
-    testingQuantity: number;
-    grossSalesQuantity: number;
-    netSalesQuantity: number;
+  async updateReading(shiftId: string, nozzleId: string, data: {
+    openingMilliunits: number;
+    closingMilliunits: number;
+    testingMilliunits: number;
+    grossMilliunits: number;
+    netMilliunits: number;
     hasOpeningVariance: boolean;
-    openingVarianceQuantity: number;
+    openingVarianceMilliunits: number;
     varianceReason: string | null;
     updatedAt: string;
-  }>): Promise<NozzleMeterReading | null> {
-    await this.db.update(schema.nozzleMeterReadings).set(data).where(eq(schema.nozzleMeterReadings.id, id));
-    return this.findReadingById(id);
+  }): Promise<NozzleMeterReading | null> {
+    await this.db
+      .update(schema.nozzleMeterReadings)
+      .set({
+        openingTotalizer: data.openingMilliunits / MILLIUNIT_SCALE,
+        closingTotalizer: data.closingMilliunits / MILLIUNIT_SCALE,
+        testingQuantity: data.testingMilliunits / MILLIUNIT_SCALE,
+        grossSalesQuantity: data.grossMilliunits / MILLIUNIT_SCALE,
+        netSalesQuantity: data.netMilliunits / MILLIUNIT_SCALE,
+        openingTotalizerMilliunits: data.openingMilliunits,
+        closingTotalizerMilliunits: data.closingMilliunits,
+        testingQuantityMilliunits: data.testingMilliunits,
+        grossSalesQuantityMilliunits: data.grossMilliunits,
+        netSalesQuantityMilliunits: data.netMilliunits,
+        hasOpeningVariance: data.hasOpeningVariance,
+        openingVarianceQuantity: data.openingVarianceMilliunits / MILLIUNIT_SCALE,
+        openingVarianceMilliunits: data.openingVarianceMilliunits,
+        varianceReason: data.varianceReason,
+        updatedAt: data.updatedAt,
+      })
+      .where(
+        and(
+          eq(schema.nozzleMeterReadings.operationalShiftId, shiftId),
+          eq(schema.nozzleMeterReadings.nozzleId, nozzleId)
+        )
+      );
+
+    return this.findReadingByShiftAndNozzle(shiftId, nozzleId);
   }
 
   // ==========================================
@@ -721,23 +935,14 @@ export class PumpRepository {
     const rows = await this.db
       .select({
         record: schema.nozzleUnavailabilityRecords,
-        nozzle: schema.nozzles,
-        dispenser: schema.dispensers,
-        product: schema.products,
         user: schema.users,
       })
       .from(schema.nozzleUnavailabilityRecords)
-      .innerJoin(schema.nozzles, eq(schema.nozzleUnavailabilityRecords.nozzleId, schema.nozzles.id))
-      .innerJoin(schema.dispensers, eq(schema.nozzles.dispenserId, schema.dispensers.id))
-      .innerJoin(schema.products, eq(schema.nozzles.productId, schema.products.id))
       .innerJoin(schema.users, eq(schema.nozzleUnavailabilityRecords.recordedBy, schema.users.id))
       .where(eq(schema.nozzleUnavailabilityRecords.operationalShiftId, shiftId));
 
     return rows.map(r => ({
       ...r.record,
-      nozzleNumber: r.nozzle.nozzleNumber,
-      dispenserNumber: r.dispenser.dispenserNumber,
-      productName: r.product.name,
       recordedByName: r.user.name,
     }));
   }
@@ -768,7 +973,7 @@ export class PumpRepository {
   }
 
   async removeUnavailability(shiftId: string, nozzleId: string): Promise<boolean> {
-    const res = await this.db
+    await this.db
       .delete(schema.nozzleUnavailabilityRecords)
       .where(
         and(
@@ -780,14 +985,15 @@ export class PumpRepository {
   }
 
   // ==========================================
-  // 10. SHIFT ENTRY GRID HELPER
+  // 10. SHIFT ENTRY GRID (USING HISTORICAL SNAPSHOT)
   // ==========================================
 
   async getShiftEntryGrid(shiftId: string): Promise<ShiftEntryGridItem[]> {
     const shift = await this.findOperationalShiftById(shiftId);
     if (!shift) return [];
 
-    const activeNozzles = await this.listActiveNozzlesForOutlet(shift.outletId);
+    // CRITICAL: Retrieve participating nozzles from historical snapshot!
+    const snapshots = await this.listShiftNozzleSnapshots(shiftId);
     const readings = await this.listReadingsForShift(shiftId);
     const unavails = await this.listUnavailabilityForShift(shiftId);
 
@@ -799,15 +1005,15 @@ export class PumpRepository {
 
     const grid: ShiftEntryGridItem[] = [];
 
-    for (const nozzle of activeNozzles) {
-      const reading = readingMap.get(nozzle.id) || null;
-      const unavail = unavailMap.get(nozzle.id) || null;
+    for (const snapshot of snapshots) {
+      const reading = readingMap.get(snapshot.nozzleId) || null;
+      const unavail = unavailMap.get(snapshot.nozzleId) || null;
 
-      const prevReading = await this.getLatestClosedReadingForNozzle(nozzle.id);
-      const suggestedOpeningTotalizer = prevReading ? prevReading.closingTotalizer : 0;
+      const prevReading = await this.getLatestClosedReadingForNozzle(snapshot.nozzleId);
+      const suggestedOpeningTotalizer = prevReading ? prevReading.closingTotalizerStr : '0.000';
 
       grid.push({
-        nozzle,
+        snapshot,
         reading,
         unavailability: unavail,
         suggestedOpeningTotalizer,
@@ -818,48 +1024,16 @@ export class PumpRepository {
     return grid;
   }
 
-  async listActiveNozzlesForOutlet(outletId: string): Promise<Nozzle[]> {
-    const rows = await this.db
-      .select({
-        nozzle: schema.nozzles,
-        dispenser: schema.dispensers,
-        product: schema.products,
-        tank: schema.tanks,
-      })
-      .from(schema.nozzles)
-      .innerJoin(schema.dispensers, eq(schema.nozzles.dispenserId, schema.dispensers.id))
-      .innerJoin(schema.products, eq(schema.nozzles.productId, schema.products.id))
-      .innerJoin(schema.tanks, eq(schema.nozzles.tankId, schema.tanks.id))
-      .where(
-        and(
-          eq(schema.nozzles.outletId, outletId),
-          eq(schema.nozzles.status, 'ACTIVE'),
-          eq(schema.dispensers.status, 'ACTIVE')
-        )
-      )
-      .orderBy(schema.dispensers.dispenserNumber, schema.nozzles.nozzleNumber);
-
-    return rows.map(r => ({
-      ...r.nozzle,
-      status: r.nozzle.status as any,
-      dispenserNumber: r.dispenser.dispenserNumber,
-      dispenserName: r.dispenser.name,
-      productName: r.product.name,
-      productCode: r.product.code,
-      tankNumber: r.tank.tankNumber,
-      tankName: r.tank.name,
-    }));
-  }
-
   // ==========================================
-  // 11. AUTHORITATIVE SALES SUMMARY
+  // 11. AUTHORITATIVE SALES SUMMARY (USING HISTORICAL SNAPSHOT & EXACT SCALED INTEGERS)
   // ==========================================
 
   async getSalesSummary(shiftId: string): Promise<ShiftSalesSummary | null> {
     const shift = await this.findOperationalShiftById(shiftId);
     if (!shift) return null;
 
-    const activeNozzles = await this.listActiveNozzlesForOutlet(shift.outletId);
+    // CRITICAL: Must use the shift snapshot, NOT current master!
+    const snapshots = await this.listShiftNozzleSnapshots(shiftId);
     const readings = await this.listReadingsForShift(shiftId);
     const unavails = await this.listUnavailabilityForShift(shiftId);
 
@@ -871,28 +1045,37 @@ export class PumpRepository {
 
     // Per nozzle aggregation
     const byNozzle: ShiftSalesSummary['byNozzle'] = [];
-    for (const nozzle of activeNozzles) {
-      const r = readingMap.get(nozzle.id);
-      const u = unavailMap.get(nozzle.id);
+    for (const snap of snapshots) {
+      const r = readingMap.get(snap.nozzleId);
+      const u = unavailMap.get(snap.nozzleId);
+
+      const grossMilli = r ? (r.grossSalesQuantityMilliunits ?? (r.closingTotalizerMilliunits! - r.openingTotalizerMilliunits!)) : 0;
+      const testMilli = r ? (r.testingQuantityMilliunits ?? 0) : 0;
+      const netMilli = r ? (r.netSalesQuantityMilliunits ?? (grossMilli - testMilli)) : 0;
+      const varMilli = r ? (r.openingVarianceMilliunits ?? 0) : 0;
 
       byNozzle.push({
-        nozzleId: nozzle.id,
-        nozzleNumber: nozzle.nozzleNumber,
-        dispenserId: nozzle.dispenserId,
-        dispenserNumber: nozzle.dispenserNumber || 0,
-        productId: nozzle.productId,
-        productName: nozzle.productName || 'Fuel',
-        productCategory: nozzle.productCode || 'MS',
-        unit: 'LITRE',
-        openingTotalizer: r ? r.openingTotalizer : null,
-        closingTotalizer: r ? r.closingTotalizer : null,
-        grossQuantity: r ? r.grossSalesQuantity : 0,
-        testingQuantity: r ? r.testingQuantity : 0,
-        netQuantity: r ? r.netSalesQuantity : 0,
+        nozzleId: snap.nozzleId,
+        nozzleNumber: snap.nozzleNumber,
+        dispenserId: snap.dispenserId,
+        dispenserNumber: snap.dispenserNumber,
+        dispenserName: snap.dispenserName,
+        productId: snap.productId,
+        productCode: snap.productCode,
+        productName: snap.productName,
+        productCategory: snap.productCategory,
+        unit: snap.productUnit,
+        openingTotalizerStr: r ? r.openingTotalizerStr : null,
+        closingTotalizerStr: r ? r.closingTotalizerStr : null,
+        grossQuantity: formatMilliunits(grossMilli),
+        testingQuantity: formatMilliunits(testMilli),
+        netQuantity: formatMilliunits(netMilli),
+        openingTotalizer: r ? (r.openingTotalizerMilliunits ?? 0) / MILLIUNIT_SCALE : null,
+        closingTotalizer: r ? (r.closingTotalizerMilliunits ?? 0) / MILLIUNIT_SCALE : null,
         isUnavailable: Boolean(u),
         unavailableReason: u ? u.reason : null,
         hasVariance: r ? Boolean(r.hasOpeningVariance) : false,
-        varianceQuantity: r ? (r.openingVarianceQuantity || 0) : 0,
+        varianceQuantity: formatMilliunits(varMilli),
       });
     }
 
@@ -901,9 +1084,7 @@ export class PumpRepository {
       dispenserId: string;
       dispenserNumber: number;
       name: string;
-      grossQuantity: number;
-      testingQuantity: number;
-      netQuantity: number;
+      unitMap: Map<ProductUnit, { gross: number; test: number; net: number }>;
     }>();
 
     for (const item of byNozzle) {
@@ -912,62 +1093,105 @@ export class PumpRepository {
         d = {
           dispenserId: item.dispenserId,
           dispenserNumber: item.dispenserNumber,
-          name: `Dispenser #${item.dispenserNumber}`,
-          grossQuantity: 0,
-          testingQuantity: 0,
-          netQuantity: 0,
+          name: item.dispenserName || `Dispenser #${item.dispenserNumber}`,
+          unitMap: new Map(),
         };
         dispenserMap.set(item.dispenserId, d);
       }
-      d.grossQuantity = round3(d.grossQuantity + item.grossQuantity);
-      d.testingQuantity = round3(d.testingQuantity + item.testingQuantity);
-      d.netQuantity = round3(d.netQuantity + item.netQuantity);
+
+      const r = readingMap.get(item.nozzleId);
+      const grossMilli = r ? (r.grossSalesQuantityMilliunits ?? 0) : 0;
+      const testMilli = r ? (r.testingQuantityMilliunits ?? 0) : 0;
+      const netMilli = r ? (r.netSalesQuantityMilliunits ?? 0) : 0;
+
+      let uData = d.unitMap.get(item.unit);
+      if (!uData) {
+        uData = { gross: 0, test: 0, net: 0 };
+        d.unitMap.set(item.unit, uData);
+      }
+      uData.gross += grossMilli;
+      uData.test += testMilli;
+      uData.net += netMilli;
     }
 
-    const byDispenser = Array.from(dispenserMap.values()).sort((a, b) => a.dispenserNumber - b.dispenserNumber);
+    const byDispenser = Array.from(dispenserMap.values()).map(d => ({
+      dispenserId: d.dispenserId,
+      dispenserNumber: d.dispenserNumber,
+      name: d.name,
+      totalsByUnit: Array.from(d.unitMap.entries()).map(([unit, totals]) => ({
+        unit,
+        grossQuantity: formatMilliunits(totals.gross),
+        testingQuantity: formatMilliunits(totals.test),
+        netQuantity: formatMilliunits(totals.net),
+      })),
+    })).sort((a, b) => a.dispenserNumber - b.dispenserNumber);
 
     // By product aggregation
     const productMap = new Map<string, {
       productId: string;
+      productCode: string;
       productName: string;
-      category: string;
-      unit: string;
-      grossQuantity: number;
-      testingQuantity: number;
-      netQuantity: number;
+      productCategory: string;
+      unit: ProductUnit;
+      grossMilli: number;
+      testMilli: number;
+      netMilli: number;
     }>();
 
-    for (const item of byNozzle) {
-      let p = productMap.get(item.productId);
+    for (const snap of snapshots) {
+      let p = productMap.get(snap.productId);
       if (!p) {
         p = {
-          productId: item.productId,
-          productName: item.productName,
-          category: item.productCategory,
-          unit: item.unit,
-          grossQuantity: 0,
-          testingQuantity: 0,
-          netQuantity: 0,
+          productId: snap.productId,
+          productCode: snap.productCode,
+          productName: snap.productName,
+          productCategory: snap.productCategory,
+          unit: snap.productUnit,
+          grossMilli: 0,
+          testMilli: 0,
+          netMilli: 0,
         };
-        productMap.set(item.productId, p);
+        productMap.set(snap.productId, p);
       }
-      p.grossQuantity = round3(p.grossQuantity + item.grossQuantity);
-      p.testingQuantity = round3(p.testingQuantity + item.testingQuantity);
-      p.netQuantity = round3(p.netQuantity + item.netQuantity);
+
+      const r = readingMap.get(snap.nozzleId);
+      if (r) {
+        p.grossMilli += r.grossSalesQuantityMilliunits ?? 0;
+        p.testMilli += r.testingQuantityMilliunits ?? 0;
+        p.netMilli += r.netSalesQuantityMilliunits ?? 0;
+      }
     }
 
-    const byProduct = Array.from(productMap.values());
+    const byProduct = Array.from(productMap.values()).map(p => ({
+      productId: p.productId,
+      productCode: p.productCode,
+      productName: p.productName,
+      productCategory: p.productCategory,
+      unit: p.unit,
+      grossQuantity: formatMilliunits(p.grossMilli),
+      testingQuantity: formatMilliunits(p.testMilli),
+      netQuantity: formatMilliunits(p.netMilli),
+    }));
 
-    // Total outlet quantity
-    let totalGross = 0;
-    let totalTesting = 0;
-    let totalNet = 0;
-
-    for (const item of byNozzle) {
-      totalGross += item.grossQuantity;
-      totalTesting += item.testingQuantity;
-      totalNet += item.netQuantity;
+    // Overall Totals Grouped By Physical Unit (NEVER merge Litres and KG)
+    const overallUnitMap = new Map<ProductUnit, { gross: number; test: number; net: number }>();
+    for (const p of productMap.values()) {
+      let u = overallUnitMap.get(p.unit);
+      if (!u) {
+        u = { gross: 0, test: 0, net: 0 };
+        overallUnitMap.set(p.unit, u);
+      }
+      u.gross += p.grossMilli;
+      u.test += p.testMilli;
+      u.net += p.netMilli;
     }
+
+    const totalsByUnit: UnitQuantitySummary[] = Array.from(overallUnitMap.entries()).map(([unit, t]) => ({
+      unit,
+      grossQuantity: formatMilliunits(t.gross),
+      testingQuantity: formatMilliunits(t.test),
+      netQuantity: formatMilliunits(t.net),
+    }));
 
     return {
       operationalShiftId: shift.id,
@@ -977,11 +1201,7 @@ export class PumpRepository {
       byNozzle,
       byDispenser,
       byProduct,
-      totalOutletQuantity: {
-        grossQuantity: round3(totalGross),
-        testingQuantity: round3(totalTesting),
-        netQuantity: round3(totalNet),
-      },
+      totalsByUnit,
     };
   }
 }

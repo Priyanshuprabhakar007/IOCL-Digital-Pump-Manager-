@@ -40,24 +40,36 @@ export const PERMISSIONS = {
 
   AUDIT_READ: 'audit.read',
 
-  // Phase 2A: Pump Operations & Shift Foundation
+  // Phase 2A Hardened: Granular Products
   PRODUCTS_READ: 'products.read',
-  PRODUCTS_WRITE: 'products.write',
+  PRODUCTS_MANAGE_GLOBAL: 'products.manage_global',
+  OUTLET_PRODUCTS_READ: 'outlet_products.read',
+  OUTLET_PRODUCTS_WRITE: 'outlet_products.write',
 
+  // Phase 2A Hardened: Tanks
   TANKS_READ: 'tanks.read',
   TANKS_WRITE: 'tanks.write',
 
+  // Phase 2A Hardened: Dispensers
   DISPENSERS_READ: 'dispensers.read',
   DISPENSERS_WRITE: 'dispensers.write',
 
+  // Phase 2A Hardened: Nozzles
   NOZZLES_READ: 'nozzles.read',
   NOZZLES_WRITE: 'nozzles.write',
 
-  SHIFTS_READ: 'shifts.read',
-  SHIFTS_MANAGE: 'shifts.manage',
+  // Phase 2A Hardened: Shift Templates
+  SHIFT_TEMPLATES_READ: 'shift_templates.read',
+  SHIFT_TEMPLATES_WRITE: 'shift_templates.write',
 
-  READINGS_READ: 'readings.read',
-  READINGS_WRITE: 'readings.write',
+  // Phase 2A Hardened: Operational Shifts
+  SHIFTS_READ: 'shifts.read',
+  SHIFTS_OPEN: 'shifts.open',
+  SHIFTS_CLOSE: 'shifts.close',
+
+  // Phase 2A Hardened: Meter Readings
+  METER_READINGS_READ: 'meter_readings.read',
+  METER_READINGS_WRITE: 'meter_readings.write',
 } as const;
 
 export type PermissionCode = typeof PERMISSIONS[keyof typeof PERMISSIONS];

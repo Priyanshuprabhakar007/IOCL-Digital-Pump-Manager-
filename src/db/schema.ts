@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, real, primaryKey, index } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, integer, real, primaryKey, index, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 export const users = sqliteTable('users', {
   id: text('id').primaryKey(),
@@ -133,6 +133,8 @@ export const userScopeAssignments = sqliteTable('user_scope_assignments', {
   index('idx_usa_scope_level').on(table.scopeLevel),
 ]);
 
+export const userScopes = userScopeAssignments;
+
 export const sessions = sqliteTable('sessions', {
   id: text('id').primaryKey(),
   userId: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
@@ -179,7 +181,7 @@ export const auditLogs = sqliteTable('audit_logs', {
 ]);
 
 // ==========================================
-// Phase 2A: Pump Operations & Shift Foundation
+// Phase 2A & Hardening: Pump Operations & Shift Foundation
 // ==========================================
 
 export const products = sqliteTable('products', {
@@ -192,7 +194,7 @@ export const products = sqliteTable('products', {
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
 }, (table) => [
-  index('idx_products_code').on(table.code),
+  uniqueIndex('idx_products_code_unique').on(table.code),
   index('idx_products_category').on(table.category),
   index('idx_products_status').on(table.status),
 ]);
@@ -205,6 +207,7 @@ export const outletProducts = sqliteTable('outlet_products', {
   createdAt: text('created_at').notNull(),
   createdBy: text('created_by').notNull().references(() => users.id),
 }, (table) => [
+  uniqueIndex('idx_outlet_products_unique').on(table.outletId, table.productId),
   index('idx_op_outlet_id').on(table.outletId),
   index('idx_op_product_id').on(table.productId),
 ]);
@@ -224,6 +227,7 @@ export const tanks = sqliteTable('tanks', {
   updatedAt: text('updated_at').notNull(),
   createdBy: text('created_by').notNull().references(() => users.id),
 }, (table) => [
+  uniqueIndex('idx_tanks_outlet_tank_num').on(table.outletId, table.tankNumber),
   index('idx_tanks_outlet_id').on(table.outletId),
   index('idx_tanks_product_id').on(table.productId),
 ]);
@@ -242,6 +246,7 @@ export const dispensers = sqliteTable('dispensers', {
   updatedAt: text('updated_at').notNull(),
   createdBy: text('created_by').notNull().references(() => users.id),
 }, (table) => [
+  uniqueIndex('idx_dispensers_outlet_disp_num').on(table.outletId, table.dispenserNumber),
   index('idx_dispensers_outlet_id').on(table.outletId),
   index('idx_dispensers_serial').on(table.serialNumber),
 ]);
@@ -258,6 +263,7 @@ export const nozzles = sqliteTable('nozzles', {
   updatedAt: text('updated_at').notNull(),
   createdBy: text('created_by').notNull().references(() => users.id),
 }, (table) => [
+  uniqueIndex('idx_nozzles_disp_nozzle_num').on(table.dispenserId, table.nozzleNumber),
   index('idx_nozzles_outlet_id').on(table.outletId),
   index('idx_nozzles_dispenser_id').on(table.dispenserId),
   index('idx_nozzles_tank_id').on(table.tankId),
@@ -277,6 +283,7 @@ export const shiftTemplates = sqliteTable('shift_templates', {
   updatedAt: text('updated_at').notNull(),
   createdBy: text('created_by').notNull().references(() => users.id),
 }, (table) => [
+  uniqueIndex('idx_shift_templates_outlet_code').on(table.outletId, table.code),
   index('idx_shift_templates_outlet_id').on(table.outletId),
 ]);
 
@@ -294,9 +301,36 @@ export const operationalShifts = sqliteTable('operational_shifts', {
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
 }, (table) => [
+  uniqueIndex('idx_op_shifts_unique').on(table.outletId, table.shiftTemplateId, table.businessDate),
   index('idx_op_shifts_outlet_id').on(table.outletId),
   index('idx_op_shifts_business_date').on(table.businessDate),
   index('idx_op_shifts_status').on(table.status),
+]);
+
+// Phase 2A Hardening: Historical Shift Nozzles Snapshot
+export const operationalShiftNozzles = sqliteTable('operational_shift_nozzles', {
+  id: text('id').primaryKey(),
+  operationalShiftId: text('operational_shift_id').notNull().references(() => operationalShifts.id, { onDelete: 'cascade' }),
+  outletId: text('outlet_id').notNull().references(() => retailOutlets.id, { onDelete: 'cascade' }),
+  nozzleId: text('nozzle_id').notNull().references(() => nozzles.id),
+  dispenserId: text('dispenser_id').notNull().references(() => dispensers.id),
+  dispenserNumber: integer('dispenser_number').notNull(),
+  dispenserName: text('dispenser_name').notNull(),
+  nozzleNumber: integer('nozzle_number').notNull(),
+  productId: text('product_id').notNull().references(() => products.id),
+  productCode: text('product_code').notNull(),
+  productName: text('product_name').notNull(),
+  productCategory: text('product_category').notNull(),
+  productUnit: text('product_unit').notNull(),
+  tankId: text('tank_id').notNull().references(() => tanks.id),
+  tankNumber: integer('tank_number').notNull(),
+  snapshotStatus: text('snapshot_status').notNull().default('ACTIVE'),
+  createdAt: text('created_at').notNull(),
+}, (table) => [
+  uniqueIndex('idx_osn_shift_nozzle_unique').on(table.operationalShiftId, table.nozzleId),
+  index('idx_osn_shift_id').on(table.operationalShiftId),
+  index('idx_osn_outlet_id').on(table.outletId),
+  index('idx_osn_nozzle_id').on(table.nozzleId),
 ]);
 
 export const nozzleMeterReadings = sqliteTable('nozzle_meter_readings', {
@@ -313,9 +347,17 @@ export const nozzleMeterReadings = sqliteTable('nozzle_meter_readings', {
   hasOpeningVariance: integer('has_opening_variance', { mode: 'boolean' }).notNull().default(false),
   openingVarianceQuantity: real('opening_variance_quantity').default(0),
   varianceReason: text('variance_reason'),
+  // Exact 3-decimal integer milliunits
+  openingTotalizerMilliunits: integer('opening_totalizer_milliunits'),
+  closingTotalizerMilliunits: integer('closing_totalizer_milliunits'),
+  testingQuantityMilliunits: integer('testing_quantity_milliunits').default(0),
+  grossSalesQuantityMilliunits: integer('gross_sales_quantity_milliunits'),
+  netSalesQuantityMilliunits: integer('net_sales_quantity_milliunits'),
+  openingVarianceMilliunits: integer('opening_variance_milliunits').default(0),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
 }, (table) => [
+  uniqueIndex('idx_nmr_shift_nozzle_unique').on(table.operationalShiftId, table.nozzleId),
   index('idx_nmr_shift_id').on(table.operationalShiftId),
   index('idx_nmr_nozzle_id').on(table.nozzleId),
   index('idx_nmr_outlet_id').on(table.outletId),
@@ -329,7 +371,7 @@ export const nozzleUnavailabilityRecords = sqliteTable('nozzle_unavailability_re
   recordedBy: text('recorded_by').notNull().references(() => users.id),
   createdAt: text('created_at').notNull(),
 }, (table) => [
+  uniqueIndex('idx_nur_shift_nozzle_unique').on(table.operationalShiftId, table.nozzleId),
   index('idx_nur_shift_id').on(table.operationalShiftId),
   index('idx_nur_nozzle_id').on(table.nozzleId),
 ]);
-
