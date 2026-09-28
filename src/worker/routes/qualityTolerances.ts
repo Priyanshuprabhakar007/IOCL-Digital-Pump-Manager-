@@ -183,13 +183,6 @@ qualityTolerances.post('/quality-tolerances', requirePermission(PERMISSIONS.QUAL
         const startB = r.effectiveFrom;
         const endB = r.effectiveTo || '9999-12-31';
 
-        // If existing rule is open-ended and started before the new rule, bound its effectiveTo to day before effectiveFrom
-        if (!r.effectiveTo && startB < effectiveFrom && (!effectiveTo || effectiveTo >= startB)) {
-          const prevEndDate = new Date(new Date(effectiveFrom).getTime() - 86400000).toISOString().split('T')[0];
-          await pumpRepo.updateQualityTolerance(r.id, { effectiveTo: prevEndDate });
-          continue;
-        }
-
         // Check date range overlap [effectiveFrom, endA] vs [startB, endB]
         if (effectiveFrom <= endB && endA >= startB) {
           return c.json({
@@ -288,6 +281,32 @@ qualityTolerances.put('/quality-tolerances/:id', requirePermission(PERMISSIONS.Q
       data: null,
       error: { code: 'INVALID_EFFECTIVE_DATES', message: 'effective_to must be on or after effective_from.' },
     }, 400);
+  }
+
+  const newStatus = payload.status || existing.status;
+  const newProductId = payload.productId !== undefined ? payload.productId : existing.productId;
+
+  if (newStatus === 'ACTIVE') {
+    const existingRules = await pumpRepo.listQualityTolerances(targetScopeType, targetScopeEntityId);
+    const endA = newTo || '9999-12-31';
+
+    for (const r of existingRules) {
+      if (r.id !== id && r.status === 'ACTIVE' && (r.productId || null) === (newProductId || null)) {
+        const startB = r.effectiveFrom;
+        const endB = r.effectiveTo || '9999-12-31';
+
+        if (newFrom <= endB && endA >= startB) {
+          return c.json({
+            success: false,
+            data: null,
+            error: {
+              code: 'OVERLAPPING_QUALITY_RULE',
+              message: 'An active quality tolerance rule already exists for this scope and product with an overlapping effective period.',
+            },
+          }, 409);
+        }
+      }
+    }
   }
 
   const updateData: any = { ...payload };

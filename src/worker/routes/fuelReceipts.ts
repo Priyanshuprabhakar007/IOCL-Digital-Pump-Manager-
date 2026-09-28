@@ -1,4 +1,6 @@
 import { Hono } from 'hono';
+import { eq, and, ne } from 'drizzle-orm';
+import * as schema from '../../db/schema';
 import { getDb } from '../../db';
 import { PumpRepository } from '../repositories/pumpRepository';
 import { OutletRepository } from '../repositories/outletRepository';
@@ -252,8 +254,8 @@ fuelReceipts.patch('/fuel-receipts/:id/status', requirePermission(PERMISSIONS.FU
   }
 
   const allowedTransitions: Record<string, string[]> = {
-    ARRIVED: ['VERIFIED', 'DECANTED', 'COMPLETED', 'CANCELLED'],
-    VERIFIED: ['DECANTED', 'COMPLETED', 'CANCELLED'],
+    ARRIVED: ['VERIFIED', 'CANCELLED'],
+    VERIFIED: ['DECANTED', 'CANCELLED'],
     DECANTED: ['COMPLETED', 'CANCELLED'],
   };
 
@@ -262,7 +264,7 @@ fuelReceipts.patch('/fuel-receipts/:id/status', requirePermission(PERMISSIONS.FU
       success: false,
       data: null,
       error: { code: 'INVALID_STATUS_TRANSITION', message: `Cannot transition fuel receipt status from ${receipt.status} to ${status}` },
-    }, 400);
+    }, 409);
   }
 
   const nowIso = new Date().toISOString();
@@ -450,8 +452,6 @@ fuelReceipts.patch('/fuel-receipt-lines/:lineId', requirePermission(PERMISSIONS.
   const targetPreId = preDecantReadingId !== undefined ? preDecantReadingId : existingLine.preDecantReadingId;
   const targetPostId = postDecantReadingId !== undefined ? postDecantReadingId : existingLine.postDecantReadingId;
 
-  const { eq: eqOp, ne: neOp, and: andOp } = require('drizzle-orm');
-
   if (targetPreId) {
     const preReading = await pumpRepo.findTankReadingById(targetPreId);
     if (!preReading || preReading.readingType !== 'PRE_RECEIPT' || preReading.operationalShiftId !== receipt.operationalShiftId || preReading.tankId !== existingLine.tankId || preReading.productId !== existingLine.productId) {
@@ -464,11 +464,11 @@ fuelReceipts.patch('/fuel-receipt-lines/:lineId', requirePermission(PERMISSIONS.
 
     const [existingUsage] = await db
       .select()
-      .from(require('../../db/schema').fuelReceiptTankLines)
+      .from(schema.fuelReceiptTankLines)
       .where(
-        andOp(
-          eqOp(require('../../db/schema').fuelReceiptTankLines.preDecantReadingId, targetPreId),
-          neOp(require('../../db/schema').fuelReceiptTankLines.id, lineId)
+        and(
+          eq(schema.fuelReceiptTankLines.preDecantReadingId, targetPreId),
+          ne(schema.fuelReceiptTankLines.id, lineId)
         )
       );
     if (existingUsage) {
@@ -492,11 +492,11 @@ fuelReceipts.patch('/fuel-receipt-lines/:lineId', requirePermission(PERMISSIONS.
 
     const [existingUsage] = await db
       .select()
-      .from(require('../../db/schema').fuelReceiptTankLines)
+      .from(schema.fuelReceiptTankLines)
       .where(
-        andOp(
-          eqOp(require('../../db/schema').fuelReceiptTankLines.postDecantReadingId, targetPostId),
-          neOp(require('../../db/schema').fuelReceiptTankLines.id, lineId)
+        and(
+          eq(schema.fuelReceiptTankLines.postDecantReadingId, targetPostId),
+          ne(schema.fuelReceiptTankLines.id, lineId)
         )
       );
     if (existingUsage) {

@@ -932,21 +932,38 @@ export class PumpRepository {
   }
 
   async closeOperationalShiftConditional(shiftId: string, closedByUserId: string): Promise<{ success: boolean; shift: OperationalShift | null; alreadyClosed: boolean; error?: string; message?: string; details?: Record<string, unknown> }> {
-    // 1. Check if shift exists and status
-    const existing = await this.findOperationalShiftById(shiftId);
-    if (!existing) {
-      return { success: false, shift: null, alreadyClosed: false, error: 'NOT_FOUND', message: 'Shift not found' };
-    }
-    if (existing.status === 'CLOSED' || existing.status === 'LOCKED') {
-      return { success: false, shift: existing, alreadyClosed: true, error: 'SHIFT_CLOSED', message: 'Shift is already closed' };
-    }
+    const nowIso = new Date().toISOString();
 
-    // 2. Centralized shift completeness validation
-    const check = await this.validateShiftCompleteness(shiftId);
-    if (!check.valid) {
+    // 1. Conditional transition OPEN -> CLOSING
+    const transitionToClosing = await this.db.all<{ id: string }>(
+      sql`UPDATE operational_shifts
+          SET status = 'CLOSING', updated_at = ${nowIso}
+          WHERE id = ${shiftId} AND status = 'OPEN'
+          RETURNING id`
+    );
+
+    if (!transitionToClosing || transitionToClosing.length === 0) {
+      const latest = await this.findOperationalShiftById(shiftId);
       return {
         success: false,
-        shift: existing,
+        shift: latest,
+        alreadyClosed: true,
+        error: 'SHIFT_CLOSED_OR_CLOSING',
+        message: 'Shift is already closing, closed, or locked',
+      };
+    }
+
+    // 2. Centralized shift completeness validation in CLOSING state
+    const check = await this.validateShiftCompleteness(shiftId);
+    if (!check.valid) {
+      // Revert status CLOSING -> OPEN on validation error
+      await this.db.run(
+        sql`UPDATE operational_shifts SET status = 'OPEN', updated_at = ${nowIso} WHERE id = ${shiftId} AND status = 'CLOSING'`
+      );
+      const current = await this.findOperationalShiftById(shiftId);
+      return {
+        success: false,
+        shift: current,
         alreadyClosed: false,
         error: check.error,
         message: check.message,
@@ -954,31 +971,41 @@ export class PumpRepository {
       };
     }
 
-    // 3. Calculate and save stock reconciliation before status change
+    // 3. Calculate and save stock reconciliation in CLOSING state
     try {
       await this.calculateAndSaveShiftStockReconciliation(shiftId);
     } catch (err: any) {
+      // Revert status CLOSING -> OPEN on reconciliation error
+      await this.db.run(
+        sql`UPDATE operational_shifts SET status = 'OPEN', updated_at = ${nowIso} WHERE id = ${shiftId} AND status = 'CLOSING'`
+      );
+      const current = await this.findOperationalShiftById(shiftId);
       return {
         success: false,
-        shift: existing,
+        shift: current,
         alreadyClosed: false,
         error: err?.code || 'RECONCILIATION_FAILED',
         message: err?.message || 'Failed to compute stock reconciliation',
       };
     }
 
-    // 4. Atomic conditional transition OPEN -> CLOSED
-    const nowIso = new Date().toISOString();
+    // 4. Final transition CLOSING -> CLOSED
     const transitionToClosed = await this.db.all<{ id: string; status: string }>(
       sql`UPDATE operational_shifts 
           SET status = 'CLOSED', closed_at = ${nowIso}, closed_by_user_id = ${closedByUserId}, updated_at = ${nowIso} 
-          WHERE id = ${shiftId} AND status = 'OPEN' 
+          WHERE id = ${shiftId} AND status = 'CLOSING' 
           RETURNING id, status`
     );
 
     if (!transitionToClosed || transitionToClosed.length === 0) {
       const latest = await this.findOperationalShiftById(shiftId);
-      return { success: false, shift: latest, alreadyClosed: true, error: 'SHIFT_CLOSED', message: 'Shift is already closed' };
+      return {
+        success: false,
+        shift: latest,
+        alreadyClosed: true,
+        error: 'SHIFT_CLOSED_OR_CLOSING',
+        message: 'Shift is already closing or closed',
+      };
     }
 
     const shift = await this.findOperationalShiftById(shiftId);
@@ -1938,47 +1965,49 @@ export class PumpRepository {
       updatedAt: string;
     }>
   ): Promise<{ success: boolean; receipt: FuelReceipt | null; shiftClosed?: boolean; error?: string }> {
-    const shift = await this.findOperationalShiftById(receiptData.operationalShiftId);
-    if (!shift || shift.status !== 'OPEN') {
+    const sealVerifiedNum = receiptData.sealVerified ? 1 : 0;
+
+    // Condition header insert directly on operational_shifts.status = 'OPEN'
+    const insertedRows = await this.db.all<{ id: string }>(
+      sql`INSERT INTO fuel_receipts (
+            id, outlet_id, operational_shift_id, tt_number, invoice_number, invoice_date,
+            arrival_at, seal_verified, seal_exception_reason, status, recorded_by_user_id, created_at, updated_at
+          )
+          SELECT
+            ${receiptData.id}, ${receiptData.outletId}, ${receiptData.operationalShiftId}, ${receiptData.ttNumber},
+            ${receiptData.invoiceNumber}, ${receiptData.invoiceDate}, ${receiptData.arrivalAt}, ${sealVerifiedNum},
+            ${receiptData.sealExceptionReason || null}, 'ARRIVED', ${receiptData.recordedByUserId}, ${receiptData.createdAt}, ${receiptData.updatedAt}
+          WHERE EXISTS (
+            SELECT 1 FROM operational_shifts WHERE id = ${receiptData.operationalShiftId} AND status = 'OPEN'
+          )
+          RETURNING id`
+    );
+
+    if (!insertedRows || insertedRows.length === 0) {
       return { success: false, receipt: null, shiftClosed: true, error: 'SHIFT_CLOSED' };
     }
 
-    const receiptInsert = this.db.insert(schema.fuelReceipts).values({
-      id: receiptData.id,
-      outletId: receiptData.outletId,
-      operationalShiftId: receiptData.operationalShiftId,
-      ttNumber: receiptData.ttNumber,
-      invoiceNumber: receiptData.invoiceNumber,
-      invoiceDate: receiptData.invoiceDate,
-      arrivalAt: receiptData.arrivalAt,
-      sealVerified: receiptData.sealVerified,
-      sealExceptionReason: receiptData.sealExceptionReason || null,
-      status: 'ARRIVED',
-      recordedByUserId: receiptData.recordedByUserId,
-      createdAt: receiptData.createdAt,
-      updatedAt: receiptData.updatedAt,
-    });
-
-    const lineInserts = linesData.map(line =>
-      this.db.insert(schema.fuelReceiptTankLines).values({
-        id: line.id,
-        fuelReceiptId: receiptData.id,
-        tankId: line.tankId,
-        productId: line.productId,
-        invoiceQuantityMilliunits: line.invoiceQuantityMilliunits,
-        densityMilliunits: line.densityMilliunits || null,
-        temperatureMilliunits: line.temperatureMilliunits || null,
-        invoiceDensityMilliunits: line.invoiceDensityMilliunits || null,
-        densityVarianceMilliunits: line.densityVarianceMilliunits || null,
-        qualityStatus: line.qualityStatus,
-        appliedToleranceSettingId: line.appliedToleranceSettingId || null,
-        appliedDensityToleranceMilliunits: line.appliedDensityToleranceMilliunits || null,
-        createdAt: line.createdAt,
-        updatedAt: line.updatedAt,
-      })
-    );
-
-    await (this.db as any).batch([receiptInsert, ...lineInserts]);
+    if (linesData.length > 0) {
+      const lineInserts = linesData.map(line =>
+        this.db.insert(schema.fuelReceiptTankLines).values({
+          id: line.id,
+          fuelReceiptId: receiptData.id,
+          tankId: line.tankId,
+          productId: line.productId,
+          invoiceQuantityMilliunits: line.invoiceQuantityMilliunits,
+          densityMilliunits: line.densityMilliunits || null,
+          temperatureMilliunits: line.temperatureMilliunits || null,
+          invoiceDensityMilliunits: line.invoiceDensityMilliunits || null,
+          densityVarianceMilliunits: line.densityVarianceMilliunits || null,
+          qualityStatus: line.qualityStatus,
+          appliedToleranceSettingId: line.appliedToleranceSettingId || null,
+          appliedDensityToleranceMilliunits: line.appliedDensityToleranceMilliunits || null,
+          createdAt: line.createdAt,
+          updatedAt: line.updatedAt,
+        })
+      );
+      await (this.db as any).batch(lineInserts);
+    }
 
     const created = await this.findFuelReceiptById(receiptData.id);
     return { success: true, receipt: created };
@@ -1994,8 +2023,9 @@ export class PumpRepository {
       sealVerified: boolean;
       sealExceptionReason: string | null;
       updatedAt: string;
-    }>
-  ): Promise<{ success: boolean; receipt: FuelReceipt | null; shiftClosed?: boolean; error?: string }> {
+    }>,
+    expectedCurrentStatus?: FuelReceiptStatus | null
+  ): Promise<{ success: boolean; receipt: FuelReceipt | null; shiftClosed?: boolean; finalized?: boolean; error?: string }> {
     const nowIso = new Date().toISOString();
     const updatedRows = await this.db.all<{ id: string }>(
       sql`UPDATE fuel_receipts
@@ -2006,12 +2036,18 @@ export class PumpRepository {
               seal_exception_reason = COALESCE(${data.sealExceptionReason || null}, seal_exception_reason),
               updated_at = ${nowIso}
           WHERE id = ${id} AND operational_shift_id = ${shiftId}
+            AND status NOT IN ('COMPLETED', 'CANCELLED')
+            ${expectedCurrentStatus ? sql`AND status = ${expectedCurrentStatus}` : sql``}
             AND EXISTS (SELECT 1 FROM operational_shifts WHERE id = ${shiftId} AND status = 'OPEN')
           RETURNING id`
     );
 
     if (!updatedRows || updatedRows.length === 0) {
-      return { success: false, receipt: null, shiftClosed: true, error: 'SHIFT_CLOSED' };
+      const existing = await this.findFuelReceiptById(id);
+      if (existing && (existing.status === 'COMPLETED' || existing.status === 'CANCELLED')) {
+        return { success: false, receipt: existing, finalized: true, error: 'RECEIPT_FINALIZED' };
+      }
+      return { success: false, receipt: existing, shiftClosed: true, error: 'SHIFT_CLOSED' };
     }
 
     const updated = await this.findFuelReceiptById(id);
@@ -2035,7 +2071,7 @@ export class PumpRepository {
       appliedDensityToleranceMilliunits: number | null;
       updatedAt: string;
     }>
-  ): Promise<{ success: boolean; line: FuelReceiptTankLine | null; shiftClosed?: boolean; error?: string }> {
+  ): Promise<{ success: boolean; line: FuelReceiptTankLine | null; shiftClosed?: boolean; finalized?: boolean; error?: string }> {
     const nowIso = new Date().toISOString();
     const updatedRows = await this.db.all<{ id: string }>(
       sql`UPDATE fuel_receipt_tank_lines
@@ -2054,18 +2090,49 @@ export class PumpRepository {
           WHERE id = ${lineId}
             AND EXISTS (
               SELECT 1 FROM fuel_receipts fr
-              JOIN operational_shifts os ON fr.operational_shift_id = os.id
-              WHERE fr.id = fuel_receipt_tank_lines.fuel_receipt_id AND os.id = ${shiftId} AND os.status = 'OPEN'
+              INNER JOIN operational_shifts os ON fr.operational_shift_id = os.id
+              WHERE fr.id = fuel_receipt_tank_lines.fuel_receipt_id
+                AND os.id = ${shiftId}
+                AND fr.status NOT IN ('COMPLETED', 'CANCELLED')
+                AND os.status = 'OPEN'
             )
           RETURNING id`
     );
 
     if (!updatedRows || updatedRows.length === 0) {
+      const [lineRow] = await this.db.select().from(schema.fuelReceiptTankLines).where(eq(schema.fuelReceiptTankLines.id, lineId));
+      if (lineRow) {
+        const parentReceipt = await this.findFuelReceiptById(lineRow.fuelReceiptId);
+        if (parentReceipt && (parentReceipt.status === 'COMPLETED' || parentReceipt.status === 'CANCELLED')) {
+          return { success: false, line: null, finalized: true, error: 'RECEIPT_FINALIZED' };
+        }
+      }
       return { success: false, line: null, shiftClosed: true, error: 'SHIFT_CLOSED' };
     }
 
-    const [row] = await this.db.select().from(schema.fuelReceiptTankLines).where(eq(schema.fuelReceiptTankLines.id, lineId));
-    return { success: true, line: row as any };
+    const [lineRow] = await this.db.select().from(schema.fuelReceiptTankLines).where(eq(schema.fuelReceiptTankLines.id, lineId));
+    if (!lineRow) return { success: false, line: null, error: 'NOT_FOUND' };
+
+    const [tank] = await this.db.select().from(schema.tanks).where(eq(schema.tanks.id, lineRow.tankId));
+    const [product] = await this.db.select().from(schema.products).where(eq(schema.products.id, lineRow.productId));
+
+    const line: FuelReceiptTankLine = {
+      ...lineRow,
+      qualityStatus: lineRow.qualityStatus as QualityStatus,
+      invoiceQuantityStr: formatMilliunits(lineRow.invoiceQuantityMilliunits),
+      measuredReceivedQuantityStr: lineRow.measuredReceivedQuantityMilliunits != null ? formatMilliunits(lineRow.measuredReceivedQuantityMilliunits) : null,
+      receiptVarianceStr: lineRow.receiptVarianceMilliunits != null ? formatMilliunits(lineRow.receiptVarianceMilliunits) : null,
+      densityStr: lineRow.densityMilliunits != null ? formatMilliunits(lineRow.densityMilliunits) : null,
+      temperatureStr: lineRow.temperatureMilliunits != null ? formatMilliunits(lineRow.temperatureMilliunits) : null,
+      invoiceDensityStr: lineRow.invoiceDensityMilliunits != null ? formatMilliunits(lineRow.invoiceDensityMilliunits) : null,
+      densityVarianceStr: lineRow.densityVarianceMilliunits != null ? formatMilliunits(lineRow.densityVarianceMilliunits) : null,
+      tankNumber: tank?.tankNumber || 0,
+      tankName: tank?.name || '',
+      productCode: product?.code || '',
+      productName: product?.name || '',
+    };
+
+    return { success: true, line };
   }
 
   // ==========================================

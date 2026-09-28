@@ -382,7 +382,25 @@ describe('IOCL Digital Pump Manager Phase 2B Tank Stock, Fuel Receipt & Reconcil
     expect(updatedLineJson.data.measuredReceivedQuantityMilliunits).toBe(5400000); // 5400 L
     expect(updatedLineJson.data.receiptVarianceMilliunits).toBe(400000); // +400 L gain vs 5000 L invoice
 
-    // 6. Complete receipt status
+    // 6. Step status transitions: VERIFIED -> DECANTED -> COMPLETED
+    await app.fetch(
+      new Request(`http://localhost/api/v1/fuel-receipts/${receiptId}/status`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Cookie: dealerCookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({ status: 'VERIFIED' }),
+      }),
+      env
+    );
+
+    await app.fetch(
+      new Request(`http://localhost/api/v1/fuel-receipts/${receiptId}/status`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Cookie: dealerCookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({ status: 'DECANTED' }),
+      }),
+      env
+    );
+
     const completeRes = await app.fetch(
       new Request(`http://localhost/api/v1/fuel-receipts/${receiptId}/status`, {
         method: 'PATCH',
@@ -565,7 +583,7 @@ describe('IOCL Digital Pump Manager Phase 2B Tank Stock, Fuel Receipt & Reconcil
         body: JSON.stringify({
           scopeType: 'GLOBAL',
           densityTolerance: '2.000',
-          effectiveFrom: '2026-01-01',
+          effectiveFrom: '2028-01-01',
         }),
       }),
       env
@@ -962,7 +980,7 @@ describe('IOCL Digital Pump Manager Phase 2B Tank Stock, Fuel Receipt & Reconcil
     );
     expect(badDateRes.status).toBe(400);
 
-    // Create Rule 1: 2026-01-01 to 2026-12-31
+    // Create Rule 1: 2028-01-01 to 2028-12-31
     const r1 = await app.fetch(
       new Request('http://localhost/api/v1/quality-tolerances', {
         method: 'POST',
@@ -971,8 +989,8 @@ describe('IOCL Digital Pump Manager Phase 2B Tank Stock, Fuel Receipt & Reconcil
           scopeType: 'GLOBAL',
           productId: 'prod-ms',
           densityTolerance: '3.000',
-          effectiveFrom: '2026-01-01',
-          effectiveTo: '2026-12-31',
+          effectiveFrom: '2028-01-01',
+          effectiveTo: '2028-12-31',
         }),
       }),
       env
@@ -988,8 +1006,8 @@ describe('IOCL Digital Pump Manager Phase 2B Tank Stock, Fuel Receipt & Reconcil
           scopeType: 'GLOBAL',
           productId: 'prod-ms',
           densityTolerance: '2.500',
-          effectiveFrom: '2026-06-01',
-          effectiveTo: '2027-06-01',
+          effectiveFrom: '2028-06-01',
+          effectiveTo: '2029-06-01',
         }),
       }),
       env

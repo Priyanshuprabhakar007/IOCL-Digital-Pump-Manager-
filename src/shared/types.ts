@@ -195,7 +195,7 @@ export type ProductCategory = 'MS' | 'HSD' | 'XP95' | 'XTRAGREEN' | 'CNG' | 'OTH
 export type ProductUnit = 'LITRE' | 'KG';
 export type ProductStatus = 'ACTIVE' | 'INACTIVE';
 export type EquipmentStatus = 'ACTIVE' | 'INACTIVE' | 'MAINTENANCE' | 'DECOMMISSIONED';
-export type ShiftStatus = 'OPEN' | 'CLOSED' | 'LOCKED';
+export type ShiftStatus = 'OPEN' | 'CLOSING' | 'CLOSED' | 'LOCKED';
 
 export interface Product {
   id: string;
@@ -641,12 +641,12 @@ export interface ShiftStockSummary {
     productCode: string;
     productName: string;
     productUnit: ProductUnit;
-    openingStockStr: string;
+    openingStockStr: string | null;
     receiptQuantityStr: string;
     salesQuantityStr: string;
-    theoreticalClosingStockStr: string;
-    physicalClosingStockStr: string;
-    varianceStr: string;
-    varianceStatus: VarianceStatus;
+    theoreticalClosingStockStr: string | null;
+    physicalClosingStockStr: string | null;
+    varianceStr: string | null;
+    varianceStatus: VarianceStatus | null;
   }>;
 }

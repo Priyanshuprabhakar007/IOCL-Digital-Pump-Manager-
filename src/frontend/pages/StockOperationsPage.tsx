@@ -272,7 +272,7 @@ export const StockOperationsPage: React.FC = () => {
           >
             {outlets.map(o => (
               <option key={o.id} value={o.id}>
-                {o.code} - {o.name}
+                {o.roCode} - {o.name}
               </option>
             ))}
           </select>
