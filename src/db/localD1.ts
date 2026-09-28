@@ -78,7 +78,7 @@ export class LocalD1Database {
   }
 
   private initSchema() {
-    const migrationFile = path.resolve(__dirname, '../../migrations/0001_initial_schema.sql');
+    const migrationFile = path.resolve(process.cwd(), 'migrations/0001_initial_schema.sql');
     if (fs.existsSync(migrationFile)) {
       const sql = fs.readFileSync(migrationFile, 'utf8');
       this.db.exec(sql);
