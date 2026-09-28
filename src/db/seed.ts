@@ -22,7 +22,7 @@ export async function seedDatabase(db: AppDatabase) {
     { id: 'role-dealer', code: ROLES.DEALER, name: 'Retail Outlet Dealer', description: 'Outlet franchisee / owner with access to assigned outlet operations' },
     { id: 'role-csp', code: ROLES.CSP, name: 'Customer Service Provider', description: 'Outlet staff / attendant with operational data access' },
   ];
-  await db.insert(schema.roles).values(rolesList);
+  await db.insert(schema.roles).values(rolesList).onConflictDoNothing();
 
   // 2. Permissions
   const permissionsList = [
@@ -76,7 +76,7 @@ export async function seedDatabase(db: AppDatabase) {
     { id: 'perm-rdg-r', code: PERMISSIONS.METER_READINGS_READ, name: 'Read Meter Readings', description: 'View nozzle meter readings' },
     { id: 'perm-rdg-w', code: PERMISSIONS.METER_READINGS_WRITE, name: 'Write Meter Readings', description: 'Record meter readings and unavailability' },
   ];
-  await db.insert(schema.permissions).values(permissionsList);
+  await db.insert(schema.permissions).values(permissionsList).onConflictDoNothing();
 
   // 3. Role Permissions Mapping
   const allPermIds = permissionsList.map(p => p.id);
@@ -136,7 +136,7 @@ export async function seedDatabase(db: AppDatabase) {
     ...fieldOfficerPerms,
     ...dealerPerms,
     ...cspPerms,
-  ]);
+  ]).onConflictDoNothing();
 
   // 4. Hierarchy (State -> Division -> Sales Area)
   const stateWb = { id: 'state-wb', code: 'WBSO', name: 'West Bengal State Office', status: 'ACTIVE' as const, createdAt: now, updatedAt: now };

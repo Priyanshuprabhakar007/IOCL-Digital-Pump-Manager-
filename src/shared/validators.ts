@@ -287,20 +287,25 @@ export const OpenShiftSchema = z.object({
   notes: z.string().trim().nullable().optional(),
 });
 
-const QuantityStringOrNumber = z.union([z.string(), z.number()]).refine(val => {
-  try {
-    parseMilliunits(val);
-    return true;
-  } catch {
-    return false;
-  }
-}, { message: 'Invalid decimal quantity. Max 3 decimal places and non-negative.' });
+const StrictDecimalQuantityString = z.string()
+  .trim()
+  .refine(val => {
+    if (!/^\d+(\.\d{1,3})?$/.test(val)) {
+      return false;
+    }
+    try {
+      parseMilliunits(val);
+      return true;
+    } catch {
+      return false;
+    }
+  }, { message: 'Quantity must be a valid non-negative decimal string with at most 3 decimal places (e.g. "1000.125")' });
 
 export const MeterReadingSchema = z.object({
   nozzleId: z.string().min(1, 'Nozzle ID is required'),
-  openingTotalizer: QuantityStringOrNumber,
-  closingTotalizer: QuantityStringOrNumber,
-  testingQuantity: QuantityStringOrNumber.default('0.000'),
+  openingTotalizer: StrictDecimalQuantityString,
+  closingTotalizer: StrictDecimalQuantityString,
+  testingQuantity: StrictDecimalQuantityString.default('0.000'),
   varianceReason: z.string().trim().nullable().optional(),
 }).refine(data => {
   try {

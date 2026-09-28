@@ -628,8 +628,8 @@ export class PumpRepository {
         )
       );
 
-    // 2. Insert shift record
-    await this.db.insert(schema.operationalShifts).values({
+    // 2. Prepare shift insert
+    const shiftInsert = this.db.insert(schema.operationalShifts).values({
       id: data.id,
       outletId: data.outletId,
       shiftTemplateId: data.shiftTemplateId,
@@ -644,7 +644,7 @@ export class PumpRepository {
       updatedAt: data.updatedAt,
     });
 
-    // 3. Insert snapshots for each active nozzle
+    // 3. Atomically insert shift and snapshot rows together
     if (activeParticipatingNozzles.length > 0) {
       const snapshotRows = activeParticipatingNozzles.map(n => ({
         id: `osn-${crypto.randomUUID()}`,
@@ -666,7 +666,10 @@ export class PumpRepository {
         createdAt: data.createdAt,
       }));
 
-      await this.db.insert(schema.operationalShiftNozzles).values(snapshotRows);
+      const snapshotInsert = this.db.insert(schema.operationalShiftNozzles).values(snapshotRows);
+      await (this.db as any).batch([shiftInsert, snapshotInsert]);
+    } else {
+      await shiftInsert;
     }
 
     const shift = (await this.findOperationalShiftById(data.id))!;
@@ -696,20 +699,26 @@ export class PumpRepository {
     return (row as OperationalShiftNozzleSnapshot) || null;
   }
 
-  async closeOperationalShiftConditional(shiftId: string, closedByUserId: string): Promise<OperationalShift | null> {
+  async closeOperationalShiftConditional(shiftId: string, closedByUserId: string): Promise<{ success: boolean; shift: OperationalShift | null; alreadyClosed: boolean }> {
     const nowIso = new Date().toISOString();
     // Conditional update: only updates if status is currently OPEN
-    const res = await this.db
-      .update(schema.operationalShifts)
-      .set({
-        status: 'CLOSED',
-        closedAt: nowIso,
-        closedByUserId,
-        updatedAt: nowIso,
-      })
-      .where(and(eq(schema.operationalShifts.id, shiftId), eq(schema.operationalShifts.status, 'OPEN')));
+    const updatedRows = await this.db.all<{ id: string; status: string }>(
+      sql`UPDATE operational_shifts 
+          SET status = 'CLOSED', closed_at = ${nowIso}, closed_by_user_id = ${closedByUserId}, updated_at = ${nowIso} 
+          WHERE id = ${shiftId} AND status = 'OPEN' 
+          RETURNING id, status`
+    );
 
-    return this.findOperationalShiftById(shiftId);
+    if (!updatedRows || updatedRows.length === 0) {
+      const existing = await this.findOperationalShiftById(shiftId);
+      if (existing && (existing.status === 'CLOSED' || existing.status === 'LOCKED')) {
+        return { success: false, shift: existing, alreadyClosed: true };
+      }
+      return { success: false, shift: existing, alreadyClosed: false };
+    }
+
+    const shift = await this.findOperationalShiftById(shiftId);
+    return { success: true, shift, alreadyClosed: false };
   }
 
   // ==========================================
@@ -739,15 +748,20 @@ export class PumpRepository {
 
     if (rows.length === 0) return null;
     const r = rows[0].reading;
-    const openingMilli = r.openingTotalizerMilliunits ?? parseMilliunits(r.openingTotalizer);
-    const closingMilli = r.closingTotalizerMilliunits ?? parseMilliunits(r.closingTotalizer);
-    const testingMilli = r.testingQuantityMilliunits ?? parseMilliunits(r.testingQuantity);
-    const grossMilli = r.grossSalesQuantityMilliunits ?? (closingMilli - openingMilli);
-    const netMilli = r.netSalesQuantityMilliunits ?? (grossMilli - testingMilli);
-    const varMilli = r.openingVarianceMilliunits ?? parseMilliunits(r.openingVarianceQuantity || 0);
+    const openingMilli = r.openingTotalizerMilliunits;
+    const closingMilli = r.closingTotalizerMilliunits;
+    const testingMilli = r.testingQuantityMilliunits;
+    const grossMilli = r.grossSalesQuantityMilliunits;
+    const netMilli = r.netSalesQuantityMilliunits;
+    const varMilli = r.openingVarianceMilliunits;
 
     return {
       ...r,
+      openingTotalizer: openingMilli / MILLIUNIT_SCALE,
+      closingTotalizer: closingMilli / MILLIUNIT_SCALE,
+      testingQuantity: testingMilli / MILLIUNIT_SCALE,
+      grossSalesQuantity: grossMilli / MILLIUNIT_SCALE,
+      netSalesQuantity: netMilli / MILLIUNIT_SCALE,
       openingTotalizerMilliunits: openingMilli,
       closingTotalizerMilliunits: closingMilli,
       testingQuantityMilliunits: testingMilli,
@@ -777,15 +791,20 @@ export class PumpRepository {
 
     return rows.map(r => {
       const rd = r.reading;
-      const openingMilli = rd.openingTotalizerMilliunits ?? parseMilliunits(rd.openingTotalizer);
-      const closingMilli = rd.closingTotalizerMilliunits ?? parseMilliunits(rd.closingTotalizer);
-      const testingMilli = rd.testingQuantityMilliunits ?? parseMilliunits(rd.testingQuantity);
-      const grossMilli = rd.grossSalesQuantityMilliunits ?? (closingMilli - openingMilli);
-      const netMilli = rd.netSalesQuantityMilliunits ?? (grossMilli - testingMilli);
-      const varMilli = rd.openingVarianceMilliunits ?? parseMilliunits(rd.openingVarianceQuantity || 0);
+      const openingMilli = rd.openingTotalizerMilliunits;
+      const closingMilli = rd.closingTotalizerMilliunits;
+      const testingMilli = rd.testingQuantityMilliunits;
+      const grossMilli = rd.grossSalesQuantityMilliunits;
+      const netMilli = rd.netSalesQuantityMilliunits;
+      const varMilli = rd.openingVarianceMilliunits;
 
       return {
         ...rd,
+        openingTotalizer: openingMilli / MILLIUNIT_SCALE,
+        closingTotalizer: closingMilli / MILLIUNIT_SCALE,
+        testingQuantity: testingMilli / MILLIUNIT_SCALE,
+        grossSalesQuantity: grossMilli / MILLIUNIT_SCALE,
+        netSalesQuantity: netMilli / MILLIUNIT_SCALE,
         openingTotalizerMilliunits: openingMilli,
         closingTotalizerMilliunits: closingMilli,
         testingQuantityMilliunits: testingMilli,
@@ -817,15 +836,20 @@ export class PumpRepository {
       );
     if (!row) return null;
 
-    const openingMilli = row.openingTotalizerMilliunits ?? parseMilliunits(row.openingTotalizer);
-    const closingMilli = row.closingTotalizerMilliunits ?? parseMilliunits(row.closingTotalizer);
-    const testingMilli = row.testingQuantityMilliunits ?? parseMilliunits(row.testingQuantity);
-    const grossMilli = row.grossSalesQuantityMilliunits ?? (closingMilli - openingMilli);
-    const netMilli = row.netSalesQuantityMilliunits ?? (grossMilli - testingMilli);
-    const varMilli = row.openingVarianceMilliunits ?? parseMilliunits(row.openingVarianceQuantity || 0);
+    const openingMilli = row.openingTotalizerMilliunits;
+    const closingMilli = row.closingTotalizerMilliunits;
+    const testingMilli = row.testingQuantityMilliunits;
+    const grossMilli = row.grossSalesQuantityMilliunits;
+    const netMilli = row.netSalesQuantityMilliunits;
+    const varMilli = row.openingVarianceMilliunits;
 
     return {
       ...row,
+      openingTotalizer: openingMilli / MILLIUNIT_SCALE,
+      closingTotalizer: closingMilli / MILLIUNIT_SCALE,
+      testingQuantity: testingMilli / MILLIUNIT_SCALE,
+      grossSalesQuantity: grossMilli / MILLIUNIT_SCALE,
+      netSalesQuantity: netMilli / MILLIUNIT_SCALE,
       openingTotalizerMilliunits: openingMilli,
       closingTotalizerMilliunits: closingMilli,
       testingQuantityMilliunits: testingMilli,
@@ -859,32 +883,34 @@ export class PumpRepository {
     varianceReason: string | null;
     createdAt: string;
     updatedAt: string;
-  }): Promise<NozzleMeterReading> {
-    await this.db.insert(schema.nozzleMeterReadings).values({
-      id: data.id,
-      operationalShiftId: data.operationalShiftId,
-      outletId: data.outletId,
-      nozzleId: data.nozzleId,
-      openingTotalizer: data.openingMilliunits / MILLIUNIT_SCALE,
-      closingTotalizer: data.closingMilliunits / MILLIUNIT_SCALE,
-      testingQuantity: data.testingMilliunits / MILLIUNIT_SCALE,
-      grossSalesQuantity: data.grossMilliunits / MILLIUNIT_SCALE,
-      netSalesQuantity: data.netMilliunits / MILLIUNIT_SCALE,
-      openingTotalizerMilliunits: data.openingMilliunits,
-      closingTotalizerMilliunits: data.closingMilliunits,
-      testingQuantityMilliunits: data.testingMilliunits,
-      grossSalesQuantityMilliunits: data.grossMilliunits,
-      netSalesQuantityMilliunits: data.netMilliunits,
-      recordedByUserId: data.recordedByUserId,
-      hasOpeningVariance: data.hasOpeningVariance,
-      openingVarianceQuantity: data.openingVarianceMilliunits / MILLIUNIT_SCALE,
-      openingVarianceMilliunits: data.openingVarianceMilliunits,
-      varianceReason: data.varianceReason,
-      createdAt: data.createdAt,
-      updatedAt: data.updatedAt,
-    });
+  }): Promise<{ reading: NozzleMeterReading | null; shiftClosed: boolean }> {
+    const hasVarianceNum = data.hasOpeningVariance ? 1 : 0;
+    const inserted = await this.db.all<{ id: string }>(
+      sql`INSERT INTO nozzle_meter_readings (
+        id, operational_shift_id, outlet_id, nozzle_id,
+        opening_totalizer_milliunits, closing_totalizer_milliunits, testing_quantity_milliunits,
+        gross_sales_quantity_milliunits, net_sales_quantity_milliunits, opening_variance_milliunits,
+        recorded_by_user_id, has_opening_variance, variance_reason, created_at, updated_at
+      )
+      SELECT
+        ${data.id}, ${data.operationalShiftId}, ${data.outletId}, ${data.nozzleId},
+        ${data.openingMilliunits}, ${data.closingMilliunits}, ${data.testingMilliunits},
+        ${data.grossMilliunits}, ${data.netMilliunits}, ${data.openingVarianceMilliunits},
+        ${data.recordedByUserId}, ${hasVarianceNum}, ${data.varianceReason}, ${data.createdAt}, ${data.updatedAt}
+      WHERE EXISTS (SELECT 1 FROM operational_shifts WHERE id = ${data.operationalShiftId} AND status = 'OPEN')
+      RETURNING id`
+    );
 
-    return (await this.findReadingByShiftAndNozzle(data.operationalShiftId, data.nozzleId))!;
+    if (!inserted || inserted.length === 0) {
+      const shift = await this.findOperationalShiftById(data.operationalShiftId);
+      if (shift && shift.status !== 'OPEN') {
+        return { reading: null, shiftClosed: true };
+      }
+      return { reading: null, shiftClosed: false };
+    }
+
+    const reading = await this.findReadingByShiftAndNozzle(data.operationalShiftId, data.nozzleId);
+    return { reading, shiftClosed: false };
   }
 
   async updateReading(shiftId: string, nozzleId: string, data: {
@@ -897,34 +923,35 @@ export class PumpRepository {
     openingVarianceMilliunits: number;
     varianceReason: string | null;
     updatedAt: string;
-  }): Promise<NozzleMeterReading | null> {
-    await this.db
-      .update(schema.nozzleMeterReadings)
-      .set({
-        openingTotalizer: data.openingMilliunits / MILLIUNIT_SCALE,
-        closingTotalizer: data.closingMilliunits / MILLIUNIT_SCALE,
-        testingQuantity: data.testingMilliunits / MILLIUNIT_SCALE,
-        grossSalesQuantity: data.grossMilliunits / MILLIUNIT_SCALE,
-        netSalesQuantity: data.netMilliunits / MILLIUNIT_SCALE,
-        openingTotalizerMilliunits: data.openingMilliunits,
-        closingTotalizerMilliunits: data.closingMilliunits,
-        testingQuantityMilliunits: data.testingMilliunits,
-        grossSalesQuantityMilliunits: data.grossMilliunits,
-        netSalesQuantityMilliunits: data.netMilliunits,
-        hasOpeningVariance: data.hasOpeningVariance,
-        openingVarianceQuantity: data.openingVarianceMilliunits / MILLIUNIT_SCALE,
-        openingVarianceMilliunits: data.openingVarianceMilliunits,
-        varianceReason: data.varianceReason,
-        updatedAt: data.updatedAt,
-      })
-      .where(
-        and(
-          eq(schema.nozzleMeterReadings.operationalShiftId, shiftId),
-          eq(schema.nozzleMeterReadings.nozzleId, nozzleId)
-        )
-      );
+  }): Promise<{ reading: NozzleMeterReading | null; shiftClosed: boolean }> {
+    const hasVarianceNum = data.hasOpeningVariance ? 1 : 0;
+    const updated = await this.db.all<{ id: string }>(
+      sql`UPDATE nozzle_meter_readings
+          SET
+            opening_totalizer_milliunits = ${data.openingMilliunits},
+            closing_totalizer_milliunits = ${data.closingMilliunits},
+            testing_quantity_milliunits = ${data.testingMilliunits},
+            gross_sales_quantity_milliunits = ${data.grossMilliunits},
+            net_sales_quantity_milliunits = ${data.netMilliunits},
+            has_opening_variance = ${hasVarianceNum},
+            opening_variance_milliunits = ${data.openingVarianceMilliunits},
+            variance_reason = ${data.varianceReason},
+            updated_at = ${data.updatedAt}
+          WHERE operational_shift_id = ${shiftId} AND nozzle_id = ${nozzleId}
+            AND EXISTS (SELECT 1 FROM operational_shifts WHERE id = ${shiftId} AND status = 'OPEN')
+          RETURNING id`
+    );
 
-    return this.findReadingByShiftAndNozzle(shiftId, nozzleId);
+    if (!updated || updated.length === 0) {
+      const shift = await this.findOperationalShiftById(shiftId);
+      if (shift && shift.status !== 'OPEN') {
+        return { reading: null, shiftClosed: true };
+      }
+      return { reading: null, shiftClosed: false };
+    }
+
+    const reading = await this.findReadingByShiftAndNozzle(shiftId, nozzleId);
+    return { reading, shiftClosed: false };
   }
 
   // ==========================================
@@ -967,21 +994,46 @@ export class PumpRepository {
     reason: string;
     recordedBy: string;
     createdAt: string;
-  }): Promise<NozzleUnavailabilityRecord> {
-    await this.db.insert(schema.nozzleUnavailabilityRecords).values(data);
-    return (await this.findUnavailability(data.operationalShiftId, data.nozzleId))!;
+  }): Promise<{ record: NozzleUnavailabilityRecord | null; shiftClosed: boolean }> {
+    const inserted = await this.db.all<{ id: string }>(
+      sql`INSERT INTO nozzle_unavailability_records (
+        id, operational_shift_id, nozzle_id, reason, recorded_by, created_at
+      )
+      SELECT
+        ${data.id}, ${data.operationalShiftId}, ${data.nozzleId}, ${data.reason}, ${data.recordedBy}, ${data.createdAt}
+      WHERE EXISTS (SELECT 1 FROM operational_shifts WHERE id = ${data.operationalShiftId} AND status = 'OPEN')
+      RETURNING id`
+    );
+
+    if (!inserted || inserted.length === 0) {
+      const shift = await this.findOperationalShiftById(data.operationalShiftId);
+      if (shift && shift.status !== 'OPEN') {
+        return { record: null, shiftClosed: true };
+      }
+      return { record: null, shiftClosed: false };
+    }
+
+    const record = await this.findUnavailability(data.operationalShiftId, data.nozzleId);
+    return { record, shiftClosed: false };
   }
 
-  async removeUnavailability(shiftId: string, nozzleId: string): Promise<boolean> {
-    await this.db
-      .delete(schema.nozzleUnavailabilityRecords)
-      .where(
-        and(
-          eq(schema.nozzleUnavailabilityRecords.operationalShiftId, shiftId),
-          eq(schema.nozzleUnavailabilityRecords.nozzleId, nozzleId)
-        )
-      );
-    return true;
+  async removeUnavailability(shiftId: string, nozzleId: string): Promise<{ success: boolean; shiftClosed: boolean }> {
+    const deleted = await this.db.all<{ id: string }>(
+      sql`DELETE FROM nozzle_unavailability_records
+          WHERE operational_shift_id = ${shiftId} AND nozzle_id = ${nozzleId}
+            AND EXISTS (SELECT 1 FROM operational_shifts WHERE id = ${shiftId} AND status = 'OPEN')
+          RETURNING id`
+    );
+
+    if (!deleted || deleted.length === 0) {
+      const shift = await this.findOperationalShiftById(shiftId);
+      if (shift && shift.status !== 'OPEN') {
+        return { success: false, shiftClosed: true };
+      }
+      return { success: false, shiftClosed: false };
+    }
+
+    return { success: true, shiftClosed: false };
   }
 
   // ==========================================

@@ -1,4 +1,5 @@
 import { sqliteTable, text, integer, real, primaryKey, index, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import { sql } from 'drizzle-orm';
 
 export const users = sqliteTable('users', {
   id: text('id').primaryKey(),
@@ -247,6 +248,7 @@ export const dispensers = sqliteTable('dispensers', {
   createdBy: text('created_by').notNull().references(() => users.id),
 }, (table) => [
   uniqueIndex('idx_dispensers_outlet_disp_num').on(table.outletId, table.dispenserNumber),
+  uniqueIndex('idx_dispensers_serial_number_unique').on(table.serialNumber).where(sql`serial_number IS NOT NULL`),
   index('idx_dispensers_outlet_id').on(table.outletId),
   index('idx_dispensers_serial').on(table.serialNumber),
 ]);
@@ -302,6 +304,7 @@ export const operationalShifts = sqliteTable('operational_shifts', {
   updatedAt: text('updated_at').notNull(),
 }, (table) => [
   uniqueIndex('idx_op_shifts_unique').on(table.outletId, table.shiftTemplateId, table.businessDate),
+  uniqueIndex('idx_operational_shifts_single_open').on(table.outletId).where(sql`status = 'OPEN'`),
   index('idx_op_shifts_outlet_id').on(table.outletId),
   index('idx_op_shifts_business_date').on(table.businessDate),
   index('idx_op_shifts_status').on(table.status),
@@ -338,22 +341,15 @@ export const nozzleMeterReadings = sqliteTable('nozzle_meter_readings', {
   operationalShiftId: text('operational_shift_id').notNull().references(() => operationalShifts.id, { onDelete: 'cascade' }),
   outletId: text('outlet_id').notNull().references(() => retailOutlets.id, { onDelete: 'cascade' }),
   nozzleId: text('nozzle_id').notNull().references(() => nozzles.id),
-  openingTotalizer: real('opening_totalizer').notNull(),
-  closingTotalizer: real('closing_totalizer').notNull(),
-  testingQuantity: real('testing_quantity').notNull().default(0),
-  grossSalesQuantity: real('gross_sales_quantity').notNull(),
-  netSalesQuantity: real('net_sales_quantity').notNull(),
+  openingTotalizerMilliunits: integer('opening_totalizer_milliunits').notNull(),
+  closingTotalizerMilliunits: integer('closing_totalizer_milliunits').notNull(),
+  testingQuantityMilliunits: integer('testing_quantity_milliunits').notNull().default(0),
+  grossSalesQuantityMilliunits: integer('gross_sales_quantity_milliunits').notNull(),
+  netSalesQuantityMilliunits: integer('net_sales_quantity_milliunits').notNull(),
+  openingVarianceMilliunits: integer('opening_variance_milliunits').notNull().default(0),
   recordedByUserId: text('recorded_by_user_id').notNull().references(() => users.id),
   hasOpeningVariance: integer('has_opening_variance', { mode: 'boolean' }).notNull().default(false),
-  openingVarianceQuantity: real('opening_variance_quantity').default(0),
   varianceReason: text('variance_reason'),
-  // Exact 3-decimal integer milliunits
-  openingTotalizerMilliunits: integer('opening_totalizer_milliunits'),
-  closingTotalizerMilliunits: integer('closing_totalizer_milliunits'),
-  testingQuantityMilliunits: integer('testing_quantity_milliunits').default(0),
-  grossSalesQuantityMilliunits: integer('gross_sales_quantity_milliunits'),
-  netSalesQuantityMilliunits: integer('net_sales_quantity_milliunits'),
-  openingVarianceMilliunits: integer('opening_variance_milliunits').default(0),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
 }, (table) => [

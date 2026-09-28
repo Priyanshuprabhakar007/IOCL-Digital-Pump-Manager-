@@ -227,14 +227,23 @@ shifts.post('/shifts/:shiftId/close', requirePermission(PERMISSIONS.SHIFTS_CLOSE
   }
 
   // Concurrent immutability safe conditional close
-  const closed = await pumpRepo.closeOperationalShiftConditional(shiftId, c.var.user!.user.id);
-  if (!closed || closed.status !== 'CLOSED') {
+  const closeRes = await pumpRepo.closeOperationalShiftConditional(shiftId, c.var.user!.user.id);
+  if (!closeRes.success) {
+    if (closeRes.alreadyClosed) {
+      return c.json({
+        success: false,
+        data: null,
+        error: { code: 'SHIFT_CLOSED', message: 'Operational shift was closed concurrently.' },
+      }, 409);
+    }
     return c.json({
       success: false,
       data: null,
-      error: { code: 'SHIFT_CLOSED', message: 'Operational shift was closed concurrently.' },
-    }, 409);
+      error: { code: 'NOT_FOUND', message: 'Operational shift not found or invalid' },
+    }, 404);
   }
+
+  const closed = closeRes.shift!;
 
   await auditRepo.logAction({
     id: `aud-${crypto.randomUUID()}`,
@@ -429,7 +438,7 @@ shifts.post('/shifts/:shiftId/readings', requirePermission(PERMISSIONS.METER_REA
 
   let resultReading;
   if (existingReading) {
-    resultReading = await pumpRepo.updateReading(shiftId, nozzleId, {
+    const res = await pumpRepo.updateReading(shiftId, nozzleId, {
       openingMilliunits: openingMilli,
       closingMilliunits: closingMilli,
       testingMilliunits: testingMilli,
@@ -440,8 +449,16 @@ shifts.post('/shifts/:shiftId/readings', requirePermission(PERMISSIONS.METER_REA
       varianceReason: finalVarianceReason,
       updatedAt: nowIso,
     });
+    if (res.shiftClosed) {
+      return c.json({
+        success: false,
+        data: null,
+        error: { code: 'SHIFT_CLOSED', message: 'Operational shift is CLOSED. Modifying meter readings on a closed shift is prohibited.' },
+      }, 409);
+    }
+    resultReading = res.reading;
   } else {
-    resultReading = await pumpRepo.createReading({
+    const res = await pumpRepo.createReading({
       id: `nmr-${crypto.randomUUID()}`,
       operationalShiftId: shiftId,
       outletId: shift.outletId,
@@ -458,6 +475,14 @@ shifts.post('/shifts/:shiftId/readings', requirePermission(PERMISSIONS.METER_REA
       createdAt: nowIso,
       updatedAt: nowIso,
     });
+    if (res.shiftClosed) {
+      return c.json({
+        success: false,
+        data: null,
+        error: { code: 'SHIFT_CLOSED', message: 'Operational shift is CLOSED. Modifying meter readings on a closed shift is prohibited.' },
+      }, 409);
+    }
+    resultReading = res.reading;
   }
 
   // Remove any unavailability record for this nozzle
@@ -554,7 +579,7 @@ shifts.post('/shifts/:shiftId/nozzle-unavailability', requirePermission(PERMISSI
   }
 
   const nowIso = new Date().toISOString();
-  const created = await pumpRepo.recordUnavailability({
+  const res = await pumpRepo.recordUnavailability({
     id: `nur-${crypto.randomUUID()}`,
     operationalShiftId: shiftId,
     nozzleId,
@@ -562,6 +587,16 @@ shifts.post('/shifts/:shiftId/nozzle-unavailability', requirePermission(PERMISSI
     recordedBy: c.var.user!.user.id,
     createdAt: nowIso,
   });
+
+  if (res.shiftClosed) {
+    return c.json({
+      success: false,
+      data: null,
+      error: { code: 'SHIFT_CLOSED', message: 'Operational shift is CLOSED. Modifying nozzle unavailability on a closed shift is prohibited.' },
+    }, 409);
+  }
+
+  const created = res.record!;
 
   await auditRepo.logAction({
     id: `aud-${crypto.randomUUID()}`,
@@ -609,7 +644,14 @@ shifts.delete('/shifts/:shiftId/nozzle-unavailability/:nozzleId', requirePermiss
     }, 409);
   }
 
-  await pumpRepo.removeUnavailability(shiftId, nozzleId);
+  const res = await pumpRepo.removeUnavailability(shiftId, nozzleId);
+  if (res.shiftClosed) {
+    return c.json({
+      success: false,
+      data: null,
+      error: { code: 'SHIFT_CLOSED', message: 'Operational shift is CLOSED. Modifying nozzle unavailability on a closed shift is prohibited.' },
+    }, 409);
+  }
 
   await auditRepo.logAction({
     id: `aud-${crypto.randomUUID()}`,

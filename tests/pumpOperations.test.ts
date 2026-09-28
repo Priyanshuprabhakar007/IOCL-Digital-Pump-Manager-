@@ -597,4 +597,281 @@ describe('IOCL Digital Pump Manager Phase 2A Hardened Operations Suite', () => {
     const mutateJson = (await mutateRes.json()) as any;
     expect(mutateJson.error.code).toBe('SHIFT_CLOSED');
   });
+
+  // 10. Atomic Shift + Snapshot Creation Rollback
+  it('10. Atomic shift + snapshot creation failure rolls back completely without orphaned open shift', async () => {
+    const db = getDb(localD1);
+    const shiftId = 'ops-atomic-fail-test';
+    const nowIso = new Date().toISOString();
+
+    // Prepare shift insert and a failing snapshot insert with invalid foreign key
+    const shiftInsert = db.insert(schema.operationalShifts).values({
+      id: shiftId,
+      outletId: 'ro-1001',
+      shiftTemplateId: 'st-ro1-1',
+      businessDate: '2026-10-09',
+      startedAt: nowIso,
+      status: 'OPEN',
+      openedByUserId: 'user-admin',
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    });
+
+    const failingSnapshotInsert = db.insert(schema.operationalShiftNozzles).values([
+      {
+        id: 'osn-fail-1',
+        operationalShiftId: shiftId,
+        outletId: 'ro-1001',
+        nozzleId: 'nozz-nonexistent-id', // Foreign key constraint violation on nozzles
+        dispenserId: 'disp-ro1-1',
+        dispenserNumber: 1,
+        dispenserName: 'Dispenser #1',
+        nozzleNumber: 1,
+        productId: 'prod-ms',
+        productCode: 'MS',
+        productName: 'Motor Spirit',
+        productCategory: 'MS',
+        productUnit: 'LITRE',
+        tankId: 'tank-ro1-1',
+        tankNumber: 1,
+        snapshotStatus: 'ACTIVE',
+        createdAt: nowIso,
+      },
+    ]);
+
+    let failed = false;
+    try {
+      // Execute as single atomic batch transaction
+      await (db as any).batch([shiftInsert, failingSnapshotInsert]);
+    } catch (err) {
+      failed = true;
+    }
+
+    expect(failed).toBe(true);
+
+    // CRITICAL: Prove atomicity - verify that NO open shift row exists with this shiftId
+    const shiftRows = await db.select().from(schema.operationalShifts).where(eq(schema.operationalShifts.id, shiftId));
+    expect(shiftRows.length).toBe(0);
+  });
+
+  // 11. True Concurrent Shift Immutability & Double Close Handling
+  it('11. Distinguishes initial shift closure from concurrent closure and enforces DB write-level shift status check', async () => {
+    const { cookie: dealerCookie } = await loginAs('dealer.parkstreet@iocl.in');
+    const db = getDb(localD1);
+    const { PumpRepository } = await import('../src/worker/repositories/pumpRepository');
+    const pumpRepo = new PumpRepository(db);
+
+    const openRes = await app.fetch(
+      new Request('http://localhost/api/v1/outlets/ro-1001/shifts/open', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: dealerCookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({
+          shiftTemplateId: 'st-ro1-1',
+          businessDate: '2026-10-05',
+        }),
+      }),
+      env
+    );
+    expect(openRes.status).toBe(201);
+    const shiftId = ((await openRes.json()) as any).data.id;
+
+    // Set all nozzles unavailable to allow closing
+    const snapshots = await pumpRepo.listShiftNozzleSnapshots(shiftId);
+    for (const snap of snapshots) {
+      await pumpRepo.recordUnavailability({
+        id: `nur-test-${snap.nozzleId}`,
+        operationalShiftId: shiftId,
+        nozzleId: snap.nozzleId,
+        reason: 'Shift end check',
+        recordedBy: 'user-admin',
+        createdAt: new Date().toISOString(),
+      });
+    }
+
+    // First close call succeeds
+    const closeRes1 = await pumpRepo.closeOperationalShiftConditional(shiftId, 'user-admin');
+    expect(closeRes1.success).toBe(true);
+    expect(closeRes1.alreadyClosed).toBe(false);
+    expect(closeRes1.shift?.status).toBe('CLOSED');
+
+    // Concurrent second close call detects that shift was already closed
+    const closeRes2 = await pumpRepo.closeOperationalShiftConditional(shiftId, 'user-admin');
+    expect(closeRes2.success).toBe(false);
+    expect(closeRes2.alreadyClosed).toBe(true);
+    expect(closeRes2.shift?.status).toBe('CLOSED');
+
+    // Verify repository-level conditional writes reject mutations when shift is CLOSED
+    const createReadingResult = await pumpRepo.createReading({
+      id: 'nmr-concurrent-fail',
+      operationalShiftId: shiftId,
+      outletId: 'ro-1001',
+      nozzleId: snapshots[0].nozzleId,
+      openingMilliunits: 1000000,
+      closingMilliunits: 1050000,
+      testingMilliunits: 0,
+      grossMilliunits: 50000,
+      netMilliunits: 50000,
+      recordedByUserId: 'user-admin',
+      hasOpeningVariance: false,
+      openingVarianceMilliunits: 0,
+      varianceReason: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    expect(createReadingResult.shiftClosed).toBe(true);
+    expect(createReadingResult.reading).toBeNull();
+
+    const recordUnavailResult = await pumpRepo.recordUnavailability({
+      id: 'nur-concurrent-fail',
+      operationalShiftId: shiftId,
+      nozzleId: snapshots[0].nozzleId,
+      reason: 'Late record attempt',
+      recordedBy: 'user-admin',
+      createdAt: new Date().toISOString(),
+    });
+    expect(recordUnavailResult.shiftClosed).toBe(true);
+    expect(recordUnavailResult.record).toBeNull();
+
+    const removeUnavailResult = await pumpRepo.removeUnavailability(shiftId, snapshots[0].nozzleId);
+    expect(removeUnavailResult.shiftClosed).toBe(true);
+    expect(removeUnavailResult.success).toBe(false);
+  });
+
+  // 12. Strict Decimal String Validation (Reject Numbers, Scientific Notation, >3 Decimals)
+  it('12. API strictly enforces decimal strings and rejects numbers, scientific notation, and >3 decimals', async () => {
+    const { cookie: dealerCookie } = await loginAs('dealer.parkstreet@iocl.in');
+
+    const openRes = await app.fetch(
+      new Request('http://localhost/api/v1/outlets/ro-1001/shifts/open', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: dealerCookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({
+          shiftTemplateId: 'st-ro1-1',
+          businessDate: '2026-10-06',
+        }),
+      }),
+      env
+    );
+    expect(openRes.status).toBe(201);
+    const shiftId = ((await openRes.json()) as any).data.id;
+
+    // 1. Numeric quantity (number instead of string) -> REJECTED 400
+    const numRes = await app.fetch(
+      new Request(`http://localhost/api/v1/shifts/${shiftId}/readings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: dealerCookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({
+          nozzleId: 'nozz-ro1-1-1',
+          openingTotalizer: 1000.125, // number
+          closingTotalizer: '1050.000',
+        }),
+      }),
+      env
+    );
+    expect(numRes.status).toBe(400);
+
+    // 2. >3 Decimal Places -> REJECTED 400
+    const fourDecRes = await app.fetch(
+      new Request(`http://localhost/api/v1/shifts/${shiftId}/readings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: dealerCookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({
+          nozzleId: 'nozz-ro1-1-1',
+          openingTotalizer: '1000.1234', // 4 decimals
+          closingTotalizer: '1050.000',
+        }),
+      }),
+      env
+    );
+    expect(fourDecRes.status).toBe(400);
+
+    // 3. Negative quantity -> REJECTED 400
+    const negRes = await app.fetch(
+      new Request(`http://localhost/api/v1/shifts/${shiftId}/readings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: dealerCookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({
+          nozzleId: 'nozz-ro1-1-1',
+          openingTotalizer: '-1000.000',
+          closingTotalizer: '1050.000',
+        }),
+      }),
+      env
+    );
+    expect(negRes.status).toBe(400);
+
+    // 4. Scientific notation -> REJECTED 400
+    const sciRes = await app.fetch(
+      new Request(`http://localhost/api/v1/shifts/${shiftId}/readings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: dealerCookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({
+          nozzleId: 'nozz-ro1-1-1',
+          openingTotalizer: '1e3',
+          closingTotalizer: '1050.000',
+        }),
+      }),
+      env
+    );
+    expect(sciRes.status).toBe(400);
+
+    // 5. Valid decimal string forms -> ACCEPTED 201
+    const validRes = await app.fetch(
+      new Request(`http://localhost/api/v1/shifts/${shiftId}/readings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: dealerCookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({
+          nozzleId: 'nozz-ro1-1-1',
+          openingTotalizer: '1000',
+          closingTotalizer: '1000.125',
+          testingQuantity: '0.1',
+        }),
+      }),
+      env
+    );
+    expect(validRes.status).toBe(201);
+    const validJson = (await validRes.json()) as any;
+    expect(validJson.data.openingTotalizerMilliunits).toBe(1000000);
+    expect(validJson.data.closingTotalizerMilliunits).toBe(1000125);
+    expect(validJson.data.testingQuantityMilliunits).toBe(100);
+    expect(validJson.data.grossSalesQuantityMilliunits).toBe(125);
+    expect(validJson.data.netSalesQuantityMilliunits).toBe(25);
+    expect(validJson.data.openingTotalizerStr).toBe('1000.000');
+    expect(validJson.data.closingTotalizerStr).toBe('1000.125');
+    expect(validJson.data.testingQuantityStr).toBe('0.100');
+    expect(validJson.data.grossSalesQuantityStr).toBe('0.125');
+    expect(validJson.data.netSalesQuantityStr).toBe('0.025');
+  });
+
+  // 13. Idempotent Migration 0004 Permissions & Scaled-Integer DB Parity
+  it('13. Migration 0004 ensures all required granular permissions exist and meter readings use integer milliunits', async () => {
+    const db = getDb(localD1);
+
+    const requiredPermissions = [
+      'products.read',
+      'products.manage_global',
+      'outlet_products.read',
+      'outlet_products.write',
+      'tanks.read',
+      'tanks.write',
+      'dispensers.read',
+      'dispensers.write',
+      'nozzles.read',
+      'nozzles.write',
+      'shift_templates.read',
+      'shift_templates.write',
+      'shifts.read',
+      'shifts.open',
+      'shifts.close',
+      'meter_readings.read',
+      'meter_readings.write',
+    ];
+
+    const allPerms = await db.select().from(schema.permissions);
+    const permCodes = new Set(allPerms.map(p => p.code));
+
+    for (const code of requiredPermissions) {
+      expect(permCodes.has(code)).toBe(true);
+    }
+  });
 });

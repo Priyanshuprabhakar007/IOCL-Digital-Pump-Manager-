@@ -124,14 +124,42 @@ export class LocalD1Database {
   }
 
   private initSchema() {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS _d1_migrations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT UNIQUE,
+        applied_at TEXT DEFAULT (datetime('now'))
+      );
+    `);
+
+    let applied = new Set<string>();
+    try {
+      if (typeof this.db.prepare === 'function') {
+        const rows = this.db.prepare('SELECT name FROM _d1_migrations').all() as { name: string }[];
+        applied = new Set(rows.map(r => r.name));
+      } else if (typeof this.db.query === 'function') {
+        const rows = this.db.query('SELECT name FROM _d1_migrations').all() as { name: string }[];
+        applied = new Set(rows.map(r => r.name));
+      }
+    } catch (e) {
+      // ignore
+    }
+
     const migrationsDir = path.resolve(process.cwd(), 'migrations');
     if (fs.existsSync(migrationsDir)) {
       const files = fs.readdirSync(migrationsDir)
         .filter(f => f.endsWith('.sql'))
         .sort();
       for (const file of files) {
-        const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
-        this.db.exec(sql);
+        if (!applied.has(file)) {
+          const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
+          this.db.exec(sql);
+          if (typeof this.db.prepare === 'function') {
+            this.db.prepare('INSERT INTO _d1_migrations (name) VALUES (?)').run(file);
+          } else if (typeof this.db.query === 'function') {
+            this.db.query('INSERT INTO _d1_migrations (name) VALUES (?)').run(file);
+          }
+        }
       }
     }
   }
@@ -146,11 +174,22 @@ export class LocalD1Database {
 
   async batch<T = unknown>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]> {
     const results: D1Result<T>[] = [];
-    for (const stmt of statements) {
-      const res = await stmt.all<T>();
-      results.push(res);
+    this.db.exec('BEGIN TRANSACTION;');
+    try {
+      for (const stmt of statements) {
+        const res = await stmt.all<T>();
+        results.push(res);
+      }
+      this.db.exec('COMMIT;');
+      return results;
+    } catch (err) {
+      try {
+        this.db.exec('ROLLBACK;');
+      } catch (e) {
+        // ignore rollback errors if already aborted
+      }
+      throw err;
     }
-    return results;
   }
 
   async exec(query: string): Promise<D1ExecResult> {
