@@ -124,10 +124,15 @@ export class LocalD1Database {
   }
 
   private initSchema() {
-    const migrationFile = path.resolve(process.cwd(), 'migrations/0001_initial_schema.sql');
-    if (fs.existsSync(migrationFile)) {
-      const sql = fs.readFileSync(migrationFile, 'utf8');
-      this.db.exec(sql);
+    const migrationsDir = path.resolve(process.cwd(), 'migrations');
+    if (fs.existsSync(migrationsDir)) {
+      const files = fs.readdirSync(migrationsDir)
+        .filter(f => f.endsWith('.sql'))
+        .sort();
+      for (const file of files) {
+        const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
+        this.db.exec(sql);
+      }
     }
   }
 

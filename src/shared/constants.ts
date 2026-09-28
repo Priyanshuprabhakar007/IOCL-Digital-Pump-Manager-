@@ -39,6 +39,25 @@ export const PERMISSIONS = {
   DOCUMENTS_WRITE: 'documents.write',
 
   AUDIT_READ: 'audit.read',
+
+  // Phase 2A: Pump Operations & Shift Foundation
+  PRODUCTS_READ: 'products.read',
+  PRODUCTS_WRITE: 'products.write',
+
+  TANKS_READ: 'tanks.read',
+  TANKS_WRITE: 'tanks.write',
+
+  DISPENSERS_READ: 'dispensers.read',
+  DISPENSERS_WRITE: 'dispensers.write',
+
+  NOZZLES_READ: 'nozzles.read',
+  NOZZLES_WRITE: 'nozzles.write',
+
+  SHIFTS_READ: 'shifts.read',
+  SHIFTS_MANAGE: 'shifts.manage',
+
+  READINGS_READ: 'readings.read',
+  READINGS_WRITE: 'readings.write',
 } as const;
 
 export type PermissionCode = typeof PERMISSIONS[keyof typeof PERMISSIONS];

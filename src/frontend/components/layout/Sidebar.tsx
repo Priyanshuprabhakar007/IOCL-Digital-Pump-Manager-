@@ -11,7 +11,10 @@ import {
   FolderGit2,
   Layers,
   MapPin,
-  X
+  X,
+  Fuel,
+  Gauge,
+  Clock,
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -41,6 +44,24 @@ export const Sidebar: React.FC<SidebarProps> = ({
       label: 'Retail Outlets',
       icon: Building2,
       perm: PERMISSIONS.OUTLETS_READ,
+    },
+    {
+      id: 'products',
+      label: 'Product Catalog',
+      icon: Fuel,
+      perm: PERMISSIONS.PRODUCTS_READ,
+    },
+    {
+      id: 'pump-infra',
+      label: 'Pump Infrastructure',
+      icon: Gauge,
+      perm: PERMISSIONS.TANKS_READ,
+    },
+    {
+      id: 'shift-ops',
+      label: 'Shift Operations',
+      icon: Clock,
+      perm: PERMISSIONS.SHIFTS_READ,
     },
     {
       id: 'users',

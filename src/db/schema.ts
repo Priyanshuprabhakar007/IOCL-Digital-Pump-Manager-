@@ -177,3 +177,159 @@ export const auditLogs = sqliteTable('audit_logs', {
   index('idx_audit_logs_user_id').on(table.userId),
   index('idx_audit_logs_entity').on(table.entityType, table.entityId),
 ]);
+
+// ==========================================
+// Phase 2A: Pump Operations & Shift Foundation
+// ==========================================
+
+export const products = sqliteTable('products', {
+  id: text('id').primaryKey(),
+  code: text('code').notNull().unique(),
+  name: text('name').notNull(),
+  category: text('category').notNull(),
+  unit: text('unit', { enum: ['LITRE', 'KG'] }).notNull(),
+  status: text('status', { enum: ['ACTIVE', 'INACTIVE'] }).notNull().default('ACTIVE'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+}, (table) => [
+  index('idx_products_code').on(table.code),
+  index('idx_products_category').on(table.category),
+  index('idx_products_status').on(table.status),
+]);
+
+export const outletProducts = sqliteTable('outlet_products', {
+  id: text('id').primaryKey(),
+  outletId: text('outlet_id').notNull().references(() => retailOutlets.id, { onDelete: 'cascade' }),
+  productId: text('product_id').notNull().references(() => products.id, { onDelete: 'cascade' }),
+  status: text('status', { enum: ['ACTIVE', 'INACTIVE'] }).notNull().default('ACTIVE'),
+  createdAt: text('created_at').notNull(),
+  createdBy: text('created_by').notNull().references(() => users.id),
+}, (table) => [
+  index('idx_op_outlet_id').on(table.outletId),
+  index('idx_op_product_id').on(table.productId),
+]);
+
+export const tanks = sqliteTable('tanks', {
+  id: text('id').primaryKey(),
+  outletId: text('outlet_id').notNull().references(() => retailOutlets.id, { onDelete: 'cascade' }),
+  tankNumber: integer('tank_number').notNull(),
+  name: text('name').notNull(),
+  productId: text('product_id').notNull().references(() => products.id),
+  capacityLitres: real('capacity_litres').notNull(),
+  safeFillCapacityLitres: real('safe_fill_capacity_litres').notNull(),
+  minimumOperatingLevelLitres: real('minimum_operating_level_litres').notNull(),
+  status: text('status', { enum: ['ACTIVE', 'INACTIVE', 'MAINTENANCE', 'DECOMMISSIONED'] }).notNull().default('ACTIVE'),
+  commissionedAt: text('commissioned_at'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+  createdBy: text('created_by').notNull().references(() => users.id),
+}, (table) => [
+  index('idx_tanks_outlet_id').on(table.outletId),
+  index('idx_tanks_product_id').on(table.productId),
+]);
+
+export const dispensers = sqliteTable('dispensers', {
+  id: text('id').primaryKey(),
+  outletId: text('outlet_id').notNull().references(() => retailOutlets.id, { onDelete: 'cascade' }),
+  dispenserNumber: integer('dispenser_number').notNull(),
+  name: text('name').notNull(),
+  manufacturer: text('manufacturer'),
+  model: text('model'),
+  serialNumber: text('serial_number'),
+  status: text('status', { enum: ['ACTIVE', 'INACTIVE', 'MAINTENANCE', 'DECOMMISSIONED'] }).notNull().default('ACTIVE'),
+  commissionedAt: text('commissioned_at'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+  createdBy: text('created_by').notNull().references(() => users.id),
+}, (table) => [
+  index('idx_dispensers_outlet_id').on(table.outletId),
+  index('idx_dispensers_serial').on(table.serialNumber),
+]);
+
+export const nozzles = sqliteTable('nozzles', {
+  id: text('id').primaryKey(),
+  outletId: text('outlet_id').notNull().references(() => retailOutlets.id, { onDelete: 'cascade' }),
+  dispenserId: text('dispenser_id').notNull().references(() => dispensers.id, { onDelete: 'cascade' }),
+  nozzleNumber: integer('nozzle_number').notNull(),
+  productId: text('product_id').notNull().references(() => products.id),
+  tankId: text('tank_id').notNull().references(() => tanks.id),
+  status: text('status', { enum: ['ACTIVE', 'INACTIVE', 'MAINTENANCE', 'DECOMMISSIONED'] }).notNull().default('ACTIVE'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+  createdBy: text('created_by').notNull().references(() => users.id),
+}, (table) => [
+  index('idx_nozzles_outlet_id').on(table.outletId),
+  index('idx_nozzles_dispenser_id').on(table.dispenserId),
+  index('idx_nozzles_tank_id').on(table.tankId),
+  index('idx_nozzles_product_id').on(table.productId),
+]);
+
+export const shiftTemplates = sqliteTable('shift_templates', {
+  id: text('id').primaryKey(),
+  outletId: text('outlet_id').notNull().references(() => retailOutlets.id, { onDelete: 'cascade' }),
+  code: text('code').notNull(),
+  name: text('name').notNull(),
+  startTime: text('start_time').notNull(),
+  endTime: text('end_time').notNull(),
+  sequence: integer('sequence').notNull().default(1),
+  status: text('status', { enum: ['ACTIVE', 'INACTIVE'] }).notNull().default('ACTIVE'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+  createdBy: text('created_by').notNull().references(() => users.id),
+}, (table) => [
+  index('idx_shift_templates_outlet_id').on(table.outletId),
+]);
+
+export const operationalShifts = sqliteTable('operational_shifts', {
+  id: text('id').primaryKey(),
+  outletId: text('outlet_id').notNull().references(() => retailOutlets.id, { onDelete: 'cascade' }),
+  shiftTemplateId: text('shift_template_id').notNull().references(() => shiftTemplates.id),
+  businessDate: text('business_date').notNull(),
+  startedAt: text('started_at').notNull(),
+  closedAt: text('closed_at'),
+  status: text('status', { enum: ['OPEN', 'CLOSED', 'LOCKED'] }).notNull().default('OPEN'),
+  openedByUserId: text('opened_by_user_id').notNull().references(() => users.id),
+  closedByUserId: text('closed_by_user_id').references(() => users.id),
+  notes: text('notes'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+}, (table) => [
+  index('idx_op_shifts_outlet_id').on(table.outletId),
+  index('idx_op_shifts_business_date').on(table.businessDate),
+  index('idx_op_shifts_status').on(table.status),
+]);
+
+export const nozzleMeterReadings = sqliteTable('nozzle_meter_readings', {
+  id: text('id').primaryKey(),
+  operationalShiftId: text('operational_shift_id').notNull().references(() => operationalShifts.id, { onDelete: 'cascade' }),
+  outletId: text('outlet_id').notNull().references(() => retailOutlets.id, { onDelete: 'cascade' }),
+  nozzleId: text('nozzle_id').notNull().references(() => nozzles.id),
+  openingTotalizer: real('opening_totalizer').notNull(),
+  closingTotalizer: real('closing_totalizer').notNull(),
+  testingQuantity: real('testing_quantity').notNull().default(0),
+  grossSalesQuantity: real('gross_sales_quantity').notNull(),
+  netSalesQuantity: real('net_sales_quantity').notNull(),
+  recordedByUserId: text('recorded_by_user_id').notNull().references(() => users.id),
+  hasOpeningVariance: integer('has_opening_variance', { mode: 'boolean' }).notNull().default(false),
+  openingVarianceQuantity: real('opening_variance_quantity').default(0),
+  varianceReason: text('variance_reason'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+}, (table) => [
+  index('idx_nmr_shift_id').on(table.operationalShiftId),
+  index('idx_nmr_nozzle_id').on(table.nozzleId),
+  index('idx_nmr_outlet_id').on(table.outletId),
+]);
+
+export const nozzleUnavailabilityRecords = sqliteTable('nozzle_unavailability_records', {
+  id: text('id').primaryKey(),
+  operationalShiftId: text('operational_shift_id').notNull().references(() => operationalShifts.id, { onDelete: 'cascade' }),
+  nozzleId: text('nozzle_id').notNull().references(() => nozzles.id),
+  reason: text('reason').notNull(),
+  recordedBy: text('recorded_by').notNull().references(() => users.id),
+  createdAt: text('created_at').notNull(),
+}, (table) => [
+  index('idx_nur_shift_id').on(table.operationalShiftId),
+  index('idx_nur_nozzle_id').on(table.nozzleId),
+]);
+

@@ -180,3 +180,216 @@ export interface ApiResponse<T = unknown> {
     details?: unknown;
   } | null;
 }
+
+// ==========================================
+// Phase 2A: Pump Operations & Shift Foundation
+// ==========================================
+
+export type ProductCategory = 'MS' | 'HSD' | 'XP95' | 'XTRAGREEN' | 'CNG' | 'OTHER' | string;
+export type ProductUnit = 'LITRE' | 'KG';
+export type ProductStatus = 'ACTIVE' | 'INACTIVE';
+export type EquipmentStatus = 'ACTIVE' | 'INACTIVE' | 'MAINTENANCE' | 'DECOMMISSIONED';
+export type ShiftStatus = 'OPEN' | 'CLOSED' | 'LOCKED';
+
+export interface Product {
+  id: string;
+  code: string;
+  name: string;
+  category: ProductCategory;
+  unit: ProductUnit;
+  status: ProductStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface OutletProduct {
+  id: string;
+  outletId: string;
+  productId: string;
+  status: ProductStatus;
+  createdAt: string;
+  createdBy: string;
+  product?: Product;
+}
+
+export interface Tank {
+  id: string;
+  outletId: string;
+  tankNumber: number;
+  name: string;
+  productId: string;
+  capacityLitres: number;
+  safeFillCapacityLitres: number;
+  minimumOperatingLevelLitres: number;
+  status: EquipmentStatus;
+  commissionedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  createdBy: string;
+  productName?: string;
+  productCode?: string;
+}
+
+export interface Dispenser {
+  id: string;
+  outletId: string;
+  dispenserNumber: number;
+  name: string;
+  manufacturer?: string | null;
+  model?: string | null;
+  serialNumber?: string | null;
+  status: EquipmentStatus;
+  commissionedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  createdBy: string;
+  nozzlesCount?: number;
+}
+
+export interface Nozzle {
+  id: string;
+  outletId: string;
+  dispenserId: string;
+  nozzleNumber: number;
+  productId: string;
+  tankId: string;
+  status: EquipmentStatus;
+  createdAt: string;
+  updatedAt: string;
+  createdBy: string;
+  dispenserNumber?: number;
+  dispenserName?: string;
+  productName?: string;
+  productCode?: string;
+  tankNumber?: number;
+  tankName?: string;
+}
+
+export interface ShiftTemplate {
+  id: string;
+  outletId: string;
+  code: string;
+  name: string;
+  startTime: string;
+  endTime: string;
+  sequence: number;
+  status: 'ACTIVE' | 'INACTIVE';
+  createdAt: string;
+  updatedAt: string;
+  createdBy: string;
+}
+
+export interface OperationalShift {
+  id: string;
+  outletId: string;
+  shiftTemplateId: string;
+  businessDate: string;
+  startedAt: string;
+  closedAt: string | null;
+  status: ShiftStatus;
+  openedByUserId: string;
+  closedByUserId: string | null;
+  notes: string | null;
+  createdAt: string;
+  updatedAt: string;
+  shiftTemplateName?: string;
+  shiftTemplateCode?: string;
+  openedByName?: string;
+  closedByName?: string;
+  outletName?: string;
+  roCode?: string;
+}
+
+export interface NozzleMeterReading {
+  id: string;
+  operationalShiftId: string;
+  outletId: string;
+  nozzleId: string;
+  openingTotalizer: number;
+  closingTotalizer: number;
+  testingQuantity: number;
+  grossSalesQuantity: number;
+  netSalesQuantity: number;
+  recordedByUserId: string;
+  hasOpeningVariance: boolean;
+  openingVarianceQuantity: number;
+  varianceReason: string | null;
+  createdAt: string;
+  updatedAt: string;
+  nozzleNumber?: number;
+  dispenserNumber?: number;
+  dispenserName?: string;
+  productName?: string;
+  productCode?: string;
+  recorderName?: string;
+}
+
+export interface NozzleUnavailabilityRecord {
+  id: string;
+  operationalShiftId: string;
+  nozzleId: string;
+  reason: string;
+  recordedBy: string;
+  createdAt: string;
+  nozzleNumber?: number;
+  dispenserNumber?: number;
+  productName?: string;
+  recordedByName?: string;
+}
+
+export interface ShiftSalesSummary {
+  operationalShiftId: string;
+  businessDate: string;
+  status: ShiftStatus;
+  outletId: string;
+  byNozzle: Array<{
+    nozzleId: string;
+    nozzleNumber: number;
+    dispenserId: string;
+    dispenserNumber: number;
+    productId: string;
+    productName: string;
+    productCategory: string;
+    unit: string;
+    openingTotalizer: number | null;
+    closingTotalizer: number | null;
+    grossQuantity: number;
+    testingQuantity: number;
+    netQuantity: number;
+    isUnavailable: boolean;
+    unavailableReason: string | null;
+    hasVariance: boolean;
+    varianceQuantity: number;
+  }>;
+  byDispenser: Array<{
+    dispenserId: string;
+    dispenserNumber: number;
+    name: string;
+    grossQuantity: number;
+    testingQuantity: number;
+    netQuantity: number;
+  }>;
+  byProduct: Array<{
+    productId: string;
+    productName: string;
+    category: string;
+    unit: string;
+    grossQuantity: number;
+    testingQuantity: number;
+    netQuantity: number;
+  }>;
+  totalOutletQuantity: {
+    grossQuantity: number;
+    testingQuantity: number;
+    netQuantity: number;
+  };
+}
+
+export interface ShiftEntryGridItem {
+  nozzle: Nozzle;
+  reading?: NozzleMeterReading | null;
+  unavailability?: NozzleUnavailabilityRecord | null;
+  suggestedOpeningTotalizer: number;
+  hasPreviousShift: boolean;
+}
+

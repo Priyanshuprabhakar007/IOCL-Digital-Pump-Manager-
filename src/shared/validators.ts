@@ -170,3 +170,116 @@ export const DocumentMetadataSchema = z.object({
   sizeBytes: z.number().positive().max(5242880, 'File size cannot exceed 5 MB'),
   outletId: z.string().min(1, 'Outlet ID is required for document upload'),
 });
+
+// ==========================================
+// Phase 2A: Pump Operations & Shift Foundation
+// ==========================================
+
+export const ProductSchema = z.object({
+  code: z.string().min(1, 'Product code is required').trim().toUpperCase(),
+  name: z.string().min(2, 'Product name is required').trim(),
+  category: z.string().min(1, 'Product category is required').trim(),
+  unit: z.enum(['LITRE', 'KG']),
+  status: z.enum(['ACTIVE', 'INACTIVE']).default('ACTIVE'),
+});
+
+export const ProductUpdateSchema = z.object({
+  name: z.string().min(2, 'Product name is required').trim().optional(),
+  category: z.string().min(1, 'Product category is required').trim().optional(),
+  unit: z.enum(['LITRE', 'KG']).optional(),
+  status: z.enum(['ACTIVE', 'INACTIVE']).optional(),
+});
+
+export const OutletProductSchema = z.object({
+  productId: z.string().min(1, 'Product ID is required'),
+  status: z.enum(['ACTIVE', 'INACTIVE']).default('ACTIVE'),
+});
+
+export const TankSchema = z.object({
+  tankNumber: z.number().int().positive('Tank number must be a positive integer'),
+  name: z.string().min(1, 'Tank name is required').trim(),
+  productId: z.string().min(1, 'Product ID is required'),
+  capacityLitres: z.number().positive('Capacity must be greater than 0'),
+  safeFillCapacityLitres: z.number().positive('Safe fill capacity must be greater than 0'),
+  minimumOperatingLevelLitres: z.number().min(0, 'Minimum operating level must be non-negative'),
+  status: z.enum(['ACTIVE', 'INACTIVE', 'MAINTENANCE', 'DECOMMISSIONED']).default('ACTIVE'),
+  commissionedAt: z.string().nullable().optional(),
+}).refine(data => data.safeFillCapacityLitres <= data.capacityLitres, {
+  message: 'Safe fill capacity cannot exceed total capacity',
+  path: ['safeFillCapacityLitres'],
+});
+
+export const TankUpdateSchema = z.object({
+  name: z.string().min(1).trim().optional(),
+  productId: z.string().min(1).optional(),
+  capacityLitres: z.number().positive().optional(),
+  safeFillCapacityLitres: z.number().positive().optional(),
+  minimumOperatingLevelLitres: z.number().min(0).optional(),
+  status: z.enum(['ACTIVE', 'INACTIVE', 'MAINTENANCE', 'DECOMMISSIONED']).optional(),
+  commissionedAt: z.string().nullable().optional(),
+});
+
+export const DispenserSchema = z.object({
+  dispenserNumber: z.number().int().positive('Dispenser number must be a positive integer'),
+  name: z.string().min(1, 'Dispenser name is required').trim(),
+  manufacturer: z.string().trim().nullable().optional(),
+  model: z.string().trim().nullable().optional(),
+  serialNumber: z.string().trim().nullable().optional(),
+  status: z.enum(['ACTIVE', 'INACTIVE', 'MAINTENANCE', 'DECOMMISSIONED']).default('ACTIVE'),
+  commissionedAt: z.string().nullable().optional(),
+});
+
+export const DispenserUpdateSchema = z.object({
+  name: z.string().min(1).trim().optional(),
+  manufacturer: z.string().trim().nullable().optional(),
+  model: z.string().trim().nullable().optional(),
+  serialNumber: z.string().trim().nullable().optional(),
+  status: z.enum(['ACTIVE', 'INACTIVE', 'MAINTENANCE', 'DECOMMISSIONED']).optional(),
+  commissionedAt: z.string().nullable().optional(),
+});
+
+export const NozzleSchema = z.object({
+  dispenserId: z.string().min(1, 'Dispenser ID is required'),
+  nozzleNumber: z.number().int().positive('Nozzle number must be a positive integer'),
+  productId: z.string().min(1, 'Product ID is required'),
+  tankId: z.string().min(1, 'Tank ID is required'),
+  status: z.enum(['ACTIVE', 'INACTIVE', 'MAINTENANCE', 'DECOMMISSIONED']).default('ACTIVE'),
+});
+
+export const NozzleUpdateSchema = z.object({
+  productId: z.string().min(1).optional(),
+  tankId: z.string().min(1).optional(),
+  status: z.enum(['ACTIVE', 'INACTIVE', 'MAINTENANCE', 'DECOMMISSIONED']).optional(),
+});
+
+export const ShiftTemplateSchema = z.object({
+  code: z.string().min(1, 'Shift code is required').trim().toUpperCase(),
+  name: z.string().min(2, 'Shift name is required').trim(),
+  startTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Start time must be in HH:MM format (24h)'),
+  endTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'End time must be in HH:MM format (24h)'),
+  sequence: z.number().int().min(1).default(1),
+  status: z.enum(['ACTIVE', 'INACTIVE']).default('ACTIVE'),
+});
+
+export const OpenShiftSchema = z.object({
+  shiftTemplateId: z.string().min(1, 'Shift template is required'),
+  businessDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Business date must be YYYY-MM-DD'),
+  notes: z.string().trim().nullable().optional(),
+});
+
+export const MeterReadingSchema = z.object({
+  nozzleId: z.string().min(1, 'Nozzle ID is required'),
+  openingTotalizer: z.number().min(0, 'Opening totalizer must be non-negative'),
+  closingTotalizer: z.number().min(0, 'Closing totalizer must be non-negative'),
+  testingQuantity: z.number().min(0, 'Testing quantity must be non-negative').default(0),
+  varianceReason: z.string().trim().nullable().optional(),
+}).refine(data => data.closingTotalizer >= data.openingTotalizer, {
+  message: 'Closing totalizer must be greater than or equal to opening totalizer',
+  path: ['closingTotalizer'],
+});
+
+export const NozzleUnavailabilitySchema = z.object({
+  nozzleId: z.string().min(1, 'Nozzle ID is required'),
+  reason: z.string().min(3, 'A valid reason (minimum 3 characters) is required').trim(),
+});
+

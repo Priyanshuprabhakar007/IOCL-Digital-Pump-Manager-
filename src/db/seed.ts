@@ -44,6 +44,25 @@ export async function seedDatabase(db: AppDatabase) {
     { id: 'perm-d-w', code: PERMISSIONS.DOCUMENTS_WRITE, name: 'Write Documents', description: 'Upload and manage documents' },
 
     { id: 'perm-a-r', code: PERMISSIONS.AUDIT_READ, name: 'Read Audit Logs', description: 'View system audit trail' },
+
+    // Phase 2A: Pump Operations & Shift Foundation
+    { id: 'perm-prod-r', code: PERMISSIONS.PRODUCTS_READ, name: 'Read Products', description: 'View master fuel products catalog' },
+    { id: 'perm-prod-w', code: PERMISSIONS.PRODUCTS_WRITE, name: 'Write Products', description: 'Manage global products catalog' },
+
+    { id: 'perm-tank-r', code: PERMISSIONS.TANKS_READ, name: 'Read Tanks', description: 'View underground storage tank master' },
+    { id: 'perm-tank-w', code: PERMISSIONS.TANKS_WRITE, name: 'Write Tanks', description: 'Manage underground storage tanks' },
+
+    { id: 'perm-disp-r', code: PERMISSIONS.DISPENSERS_READ, name: 'Read Dispensers', description: 'View dispenser units master' },
+    { id: 'perm-disp-w', code: PERMISSIONS.DISPENSERS_WRITE, name: 'Write Dispensers', description: 'Manage dispenser units' },
+
+    { id: 'perm-nozz-r', code: PERMISSIONS.NOZZLES_READ, name: 'Read Nozzles', description: 'View dispensing nozzles master' },
+    { id: 'perm-nozz-w', code: PERMISSIONS.NOZZLES_WRITE, name: 'Write Nozzles', description: 'Manage dispensing nozzles' },
+
+    { id: 'perm-shf-r', code: PERMISSIONS.SHIFTS_READ, name: 'Read Shifts', description: 'View shift templates and operational shifts' },
+    { id: 'perm-shf-m', code: PERMISSIONS.SHIFTS_MANAGE, name: 'Manage Shifts', description: 'Open, close, and configure operational shifts' },
+
+    { id: 'perm-rdg-r', code: PERMISSIONS.READINGS_READ, name: 'Read Readings', description: 'View nozzle meter readings and shift summaries' },
+    { id: 'perm-rdg-w', code: PERMISSIONS.READINGS_WRITE, name: 'Write Readings', description: 'Record meter readings and nozzle unavailability' },
   ];
   await db.insert(schema.permissions).values(permissionsList);
 
@@ -54,29 +73,45 @@ export async function seedDatabase(db: AppDatabase) {
   const stateOfficePerms = [
     'perm-u-r', 'perm-u-c', 'perm-u-u',
     'perm-h-r', 'perm-o-r', 'perm-s-r', 'perm-s-a',
-    'perm-d-r', 'perm-a-r'
+    'perm-d-r', 'perm-a-r',
+    'perm-prod-r', 'perm-tank-r', 'perm-disp-r', 'perm-nozz-r', 'perm-shf-r', 'perm-rdg-r',
   ].map(pId => ({ roleId: 'role-so', permissionId: pId }));
 
   const divOfficePerms = [
     'perm-u-r', 'perm-u-c', 'perm-u-u',
     'perm-h-r', 'perm-o-r', 'perm-o-u',
-    'perm-s-r', 'perm-d-r', 'perm-d-w', 'perm-a-r'
+    'perm-s-r', 'perm-d-r', 'perm-d-w', 'perm-a-r',
+    'perm-prod-r', 'perm-tank-r', 'perm-disp-r', 'perm-nozz-r', 'perm-shf-r', 'perm-rdg-r',
   ].map(pId => ({ roleId: 'role-do', permissionId: pId }));
 
   const bmPerms = [
-    'perm-u-r', 'perm-h-r', 'perm-o-r', 'perm-s-r', 'perm-d-r', 'perm-a-r'
+    'perm-u-r', 'perm-h-r', 'perm-o-r', 'perm-s-r', 'perm-d-r', 'perm-a-r',
+    'perm-prod-r', 'perm-tank-r', 'perm-disp-r', 'perm-nozz-r', 'perm-shf-r', 'perm-rdg-r',
   ].map(pId => ({ roleId: 'role-bm', permissionId: pId }));
 
   const fieldOfficerPerms = [
-    'perm-h-r', 'perm-o-r', 'perm-o-u', 'perm-d-r', 'perm-d-w'
+    'perm-h-r', 'perm-o-r', 'perm-o-u', 'perm-d-r', 'perm-d-w',
+    'perm-prod-r', 'perm-tank-r', 'perm-disp-r', 'perm-nozz-r', 'perm-shf-r', 'perm-rdg-r',
   ].map(pId => ({ roleId: 'role-fo', permissionId: pId }));
 
   const dealerPerms = [
-    'perm-o-r', 'perm-d-r', 'perm-d-w'
+    'perm-o-r', 'perm-d-r', 'perm-d-w',
+    'perm-prod-r', 'perm-prod-w',
+    'perm-tank-r', 'perm-tank-w',
+    'perm-disp-r', 'perm-disp-w',
+    'perm-nozz-r', 'perm-nozz-w',
+    'perm-shf-r', 'perm-shf-m',
+    'perm-rdg-r', 'perm-rdg-w',
   ].map(pId => ({ roleId: 'role-dealer', permissionId: pId }));
 
   const cspPerms = [
-    'perm-o-r', 'perm-d-r'
+    'perm-o-r', 'perm-d-r',
+    'perm-prod-r',
+    'perm-tank-r',
+    'perm-disp-r',
+    'perm-nozz-r',
+    'perm-shf-r', 'perm-shf-m',
+    'perm-rdg-r', 'perm-rdg-w',
   ].map(pId => ({ roleId: 'role-csp', permissionId: pId }));
 
   await db.insert(schema.rolePermissions).values([
@@ -209,7 +244,200 @@ export async function seedDatabase(db: AppDatabase) {
     { id: 'oua-2', outletId: 'ro-1001', userId: 'user-csp', assignmentType: 'CSP', effectiveFrom: now, effectiveTo: null, isActive: true, createdAt: now, createdBy: 'SYSTEM' },
   ]);
 
-  // 10. Audit Log Initial Entry
+  // 10. Master Products Catalog
+  const defaultProducts = [
+    { id: 'prod-ms', code: 'MS', name: 'Motor Spirit (Petrol)', category: 'MS', unit: 'LITRE' as const, status: 'ACTIVE' as const, createdAt: now, updatedAt: now },
+    { id: 'prod-hsd', code: 'HSD', name: 'High Speed Diesel', category: 'HSD', unit: 'LITRE' as const, status: 'ACTIVE' as const, createdAt: now, updatedAt: now },
+    { id: 'prod-xp95', code: 'XP95', name: 'XP95 Premium Petrol', category: 'XP95', unit: 'LITRE' as const, status: 'ACTIVE' as const, createdAt: now, updatedAt: now },
+    { id: 'prod-xtragreen', code: 'XTRAGREEN', name: 'XTRAGREEN Diesel', category: 'XTRAGREEN', unit: 'LITRE' as const, status: 'ACTIVE' as const, createdAt: now, updatedAt: now },
+    { id: 'prod-cng', code: 'CNG', name: 'Compressed Natural Gas', category: 'CNG', unit: 'KG' as const, status: 'ACTIVE' as const, createdAt: now, updatedAt: now },
+  ];
+  await db.insert(schema.products).values(defaultProducts);
+
+  // 11. Outlet Product Mapping (Park Street RO sells MS, HSD, XP95)
+  await db.insert(schema.outletProducts).values([
+    { id: 'op-ro1-ms', outletId: 'ro-1001', productId: 'prod-ms', status: 'ACTIVE' as const, createdAt: now, createdBy: 'user-admin' },
+    { id: 'op-ro1-hsd', outletId: 'ro-1001', productId: 'prod-hsd', status: 'ACTIVE' as const, createdAt: now, createdBy: 'user-admin' },
+    { id: 'op-ro1-xp95', outletId: 'ro-1001', productId: 'prod-xp95', status: 'ACTIVE' as const, createdAt: now, createdBy: 'user-admin' },
+  ]);
+
+  // 12. Underground Storage Tanks (Park Street RO)
+  await db.insert(schema.tanks).values([
+    {
+      id: 'tank-ro1-1',
+      outletId: 'ro-1001',
+      tankNumber: 1,
+      name: 'Tank 1 - MS (20 KL)',
+      productId: 'prod-ms',
+      capacityLitres: 20000,
+      safeFillCapacityLitres: 19000,
+      minimumOperatingLevelLitres: 1000,
+      status: 'ACTIVE' as const,
+      commissionedAt: '2023-01-15T00:00:00Z',
+      createdAt: now,
+      updatedAt: now,
+      createdBy: 'user-admin',
+    },
+    {
+      id: 'tank-ro1-2',
+      outletId: 'ro-1001',
+      tankNumber: 2,
+      name: 'Tank 2 - HSD (25 KL)',
+      productId: 'prod-hsd',
+      capacityLitres: 25000,
+      safeFillCapacityLitres: 23750,
+      minimumOperatingLevelLitres: 1500,
+      status: 'ACTIVE' as const,
+      commissionedAt: '2023-01-15T00:00:00Z',
+      createdAt: now,
+      updatedAt: now,
+      createdBy: 'user-admin',
+    },
+  ]);
+
+  // 13. Dispensers (Park Street RO)
+  await db.insert(schema.dispensers).values([
+    {
+      id: 'disp-ro1-1',
+      outletId: 'ro-1001',
+      dispenserNumber: 1,
+      name: 'Multi-Product Dispenser 01 (MPD-1)',
+      manufacturer: 'Wayne Dresser',
+      model: 'Helix 5000',
+      serialNumber: 'WD-2023-01991',
+      status: 'ACTIVE' as const,
+      commissionedAt: '2023-01-20T00:00:00Z',
+      createdAt: now,
+      updatedAt: now,
+      createdBy: 'user-admin',
+    },
+    {
+      id: 'disp-ro1-2',
+      outletId: 'ro-1001',
+      dispenserNumber: 2,
+      name: 'Multi-Product Dispenser 02 (MPD-2)',
+      manufacturer: 'Gilbarco Veeder-Root',
+      model: 'Horizon',
+      serialNumber: 'GVR-2023-08812',
+      status: 'ACTIVE' as const,
+      commissionedAt: '2023-01-20T00:00:00Z',
+      createdAt: now,
+      updatedAt: now,
+      createdBy: 'user-admin',
+    },
+  ]);
+
+  // 14. Nozzles (Park Street RO)
+  await db.insert(schema.nozzles).values([
+    // Dispenser 1: Nozzle 1 (MS from Tank 1), Nozzle 2 (HSD from Tank 2)
+    {
+      id: 'nozz-ro1-1-1',
+      outletId: 'ro-1001',
+      dispenserId: 'disp-ro1-1',
+      nozzleNumber: 1,
+      productId: 'prod-ms',
+      tankId: 'tank-ro1-1',
+      status: 'ACTIVE' as const,
+      createdAt: now,
+      updatedAt: now,
+      createdBy: 'user-admin',
+    },
+    {
+      id: 'nozz-ro1-1-2',
+      outletId: 'ro-1001',
+      dispenserId: 'disp-ro1-1',
+      nozzleNumber: 2,
+      productId: 'prod-hsd',
+      tankId: 'tank-ro1-2',
+      status: 'ACTIVE' as const,
+      createdAt: now,
+      updatedAt: now,
+      createdBy: 'user-admin',
+    },
+    // Dispenser 2: Nozzle 1 (MS from Tank 1), Nozzle 2 (HSD from Tank 2)
+    {
+      id: 'nozz-ro1-2-1',
+      outletId: 'ro-1001',
+      dispenserId: 'disp-ro1-2',
+      nozzleNumber: 1,
+      productId: 'prod-ms',
+      tankId: 'tank-ro1-1',
+      status: 'ACTIVE' as const,
+      createdAt: now,
+      updatedAt: now,
+      createdBy: 'user-admin',
+    },
+    {
+      id: 'nozz-ro1-2-2',
+      outletId: 'ro-1001',
+      dispenserId: 'disp-ro1-2',
+      nozzleNumber: 2,
+      productId: 'prod-hsd',
+      tankId: 'tank-ro1-2',
+      status: 'ACTIVE' as const,
+      createdAt: now,
+      updatedAt: now,
+      createdBy: 'user-admin',
+    },
+  ]);
+
+  // 15. Shift Templates (Park Street RO)
+  await db.insert(schema.shiftTemplates).values([
+    {
+      id: 'st-ro1-1',
+      outletId: 'ro-1001',
+      code: 'SHIFT_1',
+      name: 'Shift 1 (Morning)',
+      startTime: '06:00',
+      endTime: '14:00',
+      sequence: 1,
+      status: 'ACTIVE' as const,
+      createdAt: now,
+      updatedAt: now,
+      createdBy: 'user-admin',
+    },
+    {
+      id: 'st-ro1-2',
+      outletId: 'ro-1001',
+      code: 'SHIFT_2',
+      name: 'Shift 2 (Evening)',
+      startTime: '14:00',
+      endTime: '22:00',
+      sequence: 2,
+      status: 'ACTIVE' as const,
+      createdAt: now,
+      updatedAt: now,
+      createdBy: 'user-admin',
+    },
+    {
+      id: 'st-ro1-3',
+      outletId: 'ro-1001',
+      code: 'SHIFT_3',
+      name: 'Shift 3 (Night Overnight)',
+      startTime: '22:00',
+      endTime: '06:00',
+      sequence: 3,
+      status: 'ACTIVE' as const,
+      createdAt: now,
+      updatedAt: now,
+      createdBy: 'user-admin',
+    },
+    {
+      id: 'st-ro1-gen',
+      outletId: 'ro-1001',
+      code: 'GENERAL',
+      name: 'General Shift',
+      startTime: '09:00',
+      endTime: '18:00',
+      sequence: 4,
+      status: 'ACTIVE' as const,
+      createdAt: now,
+      updatedAt: now,
+      createdBy: 'user-admin',
+    },
+  ]);
+
+  // 16. Audit Log Initial Entry
   await db.insert(schema.auditLogs).values({
     id: 'audit-init-001',
     userId: 'user-admin',
@@ -217,7 +445,7 @@ export async function seedDatabase(db: AppDatabase) {
     entityType: 'SYSTEM',
     entityId: 'SYSTEM',
     oldValueJson: null,
-    newValueJson: JSON.stringify({ message: 'IOCL Digital Pump Manager database seeded successfully' }),
+    newValueJson: JSON.stringify({ message: 'IOCL Digital Pump Manager database seeded successfully with Phase 1 & 2A infrastructure' }),
     ipAddress: '127.0.0.1',
     userAgent: 'D1 Seeder Engine',
     createdAt: now,

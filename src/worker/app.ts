@@ -9,6 +9,9 @@ import outletRoutes from './routes/outlets';
 import scopeRoutes from './routes/scopes';
 import auditLogRoutes from './routes/auditLogs';
 import documentRoutes from './routes/documents';
+import productRoutes from './routes/products';
+import pumpOperationsRoutes from './routes/pumpOperations';
+import shiftRoutes from './routes/shifts';
 
 export const app = new Hono<{ Bindings: EnvBindings }>();
 
@@ -92,6 +95,9 @@ app.route('/api/v1/outlets', outletRoutes);
 app.route('/api/v1/scopes', scopeRoutes);
 app.route('/api/v1/audit-logs', auditLogRoutes);
 app.route('/api/v1/documents', documentRoutes);
+app.route('/api/v1/products', productRoutes);
+app.route('/api/v1', pumpOperationsRoutes);
+app.route('/api/v1', shiftRoutes);
 
 // Global Error Handler - Generic external response, detailed internal server log
 app.onError((err, c) => {

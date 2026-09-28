@@ -10,6 +10,9 @@ import { HierarchyPage } from './frontend/pages/HierarchyPage';
 import { RbacPage } from './frontend/pages/RbacPage';
 import { AuditPage } from './frontend/pages/AuditPage';
 import { DocumentsPage } from './frontend/pages/DocumentsPage';
+import { ProductsPage } from './frontend/pages/ProductsPage';
+import { PumpInfrastructurePage } from './frontend/pages/PumpInfrastructurePage';
+import { ShiftOperationsPage } from './frontend/pages/ShiftOperationsPage';
 
 function MainAppContent() {
   const { userCtx, loading } = useAuth();
@@ -39,6 +42,9 @@ function MainAppContent() {
     <DashboardShell activeTab={activeTab} setActiveTab={setActiveTab}>
       {activeTab === 'dashboard' && <DashboardPage />}
       {activeTab === 'outlets' && <OutletsPage />}
+      {activeTab === 'products' && <ProductsPage />}
+      {activeTab === 'pump-infra' && <PumpInfrastructurePage />}
+      {activeTab === 'shift-ops' && <ShiftOperationsPage />}
       {activeTab === 'users' && <UsersPage />}
       {activeTab === 'scopes' && <ScopesPage />}
       {activeTab === 'hierarchy' && <HierarchyPage />}
