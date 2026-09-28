@@ -18,6 +18,8 @@ export async function hashToken(token: string): Promise<string> {
 export interface EnvBindings {
   DB: D1Database;
   DOCUMENTS_BUCKET: R2Bucket;
+  ALLOWED_ORIGINS?: string;
+  ENVIRONMENT?: string;
 }
 
 export type AppContext = Context<{

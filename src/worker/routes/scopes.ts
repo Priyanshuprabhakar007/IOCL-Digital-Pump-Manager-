@@ -18,7 +18,6 @@ scopes.use('*', requireAuth as any);
 scopes.get('/', requirePermission(PERMISSIONS.SCOPES_READ) as any, async (c: AppContext) => {
   const db = getDb(c.env.DB);
   const scopeRepo = new ScopeRepository(db);
-  const userRepo = new UserRepository(db);
   const hierarchyRepo = new HierarchyRepository(db);
   const outletRepo = new OutletRepository(db);
 
@@ -28,16 +27,11 @@ scopes.get('/', requirePermission(PERMISSIONS.SCOPES_READ) as any, async (c: App
     return c.json({ success: true, data: allScopes, error: null });
   }
 
-  // Filter scopes where actor has management authority over target user or target entity
+  // Filter scopes where actor has management authority over target entity or self
   const filteredScopes = [];
   for (const s of allScopes) {
-    let matches = false;
-    if (s.stateId && await ScopeService.canAccessState(c.var.user, s.stateId)) matches = true;
-    if (s.divisionId && await ScopeService.canAccessDivision(c.var.user, s.divisionId, hierarchyRepo)) matches = true;
-    if (s.salesAreaId && await ScopeService.canAccessSalesArea(c.var.user, s.salesAreaId, hierarchyRepo)) matches = true;
-    if (s.outletId && await ScopeService.canAccessOutlet(c.var.user, s.outletId, outletRepo)) matches = true;
-
-    if (matches || s.userId === c.var.user.user.id) {
+    const isWithinAuthority = await ScopeService.isScopeWithinActorAuthority(c.var.user, s, hierarchyRepo, outletRepo);
+    if (isWithinAuthority || s.userId === c.var.user.user.id) {
       filteredScopes.push(s);
     }
   }
@@ -73,7 +67,7 @@ scopes.post('/', requirePermission(PERMISSIONS.SCOPES_ASSIGN) as any, async (c: 
   const outletRepo = new OutletRepository(db);
   const auditRepo = new AuditRepository(db);
 
-  // Self Scope Elevation Check
+  // Self Scope Elevation Check: Users cannot assign scopes to themselves unless already global
   if (payload.userId === c.var.user.user.id && !c.var.user.isGlobalScope) {
     return c.json({
       success: false,
@@ -88,16 +82,6 @@ scopes.post('/', requirePermission(PERMISSIONS.SCOPES_ASSIGN) as any, async (c: 
       success: false,
       data: null,
       error: { code: 'FORBIDDEN', message: 'Only accounts with GLOBAL scope authority can assign GLOBAL scopes.' },
-    }, 403);
-  }
-
-  // Manage Target User Check
-  const canManageTarget = await ScopeService.canManageUser(c.var.user, payload.userId, userRepo, scopeRepo);
-  if (!canManageTarget) {
-    return c.json({
-      success: false,
-      data: null,
-      error: { code: 'FORBIDDEN', message: 'Target user is outside your authorized administrative scope.' },
     }, 403);
   }
 
@@ -116,7 +100,7 @@ scopes.post('/', requirePermission(PERMISSIONS.SCOPES_ASSIGN) as any, async (c: 
 
   const { derived } = validation;
 
-  // Actor Scope Authority Check over target entity
+  // Actor Scope Authority Check over target entity being assigned
   if (payload.scopeLevel === 'STATE' && derived.stateId) {
     if (!await ScopeService.canAccessState(c.var.user, derived.stateId)) {
       return c.json({ success: false, data: null, error: { code: 'FORBIDDEN', message: 'Cannot assign scope outside your assigned State Office.' } }, 403);
@@ -133,6 +117,16 @@ scopes.post('/', requirePermission(PERMISSIONS.SCOPES_ASSIGN) as any, async (c: 
     if (!await ScopeService.canAccessOutlet(c.var.user, derived.outletId, outletRepo)) {
       return c.json({ success: false, data: null, error: { code: 'FORBIDDEN', message: 'Cannot assign scope for an outlet outside your assigned scope.' } }, 403);
     }
+  }
+
+  // Manage Target User Check: Verify target user is manageable by actor
+  const canManageTarget = await ScopeService.canModifyUser(c.var.user, payload.userId, userRepo, scopeRepo, hierarchyRepo, outletRepo);
+  if (!canManageTarget) {
+    return c.json({
+      success: false,
+      data: null,
+      error: { code: 'FORBIDDEN', message: 'Target user holds organizational scopes outside your administrative authority.' },
+    }, 403);
   }
 
   const nowIso = new Date().toISOString();
@@ -164,7 +158,7 @@ scopes.post('/', requirePermission(PERMISSIONS.SCOPES_ASSIGN) as any, async (c: 
     success: true,
     data: created,
     error: null,
-  });
+  }, 201);
 });
 
 scopes.delete('/:id', requirePermission(PERMISSIONS.SCOPES_ASSIGN) as any, async (c: AppContext) => {
@@ -175,24 +169,33 @@ scopes.delete('/:id', requirePermission(PERMISSIONS.SCOPES_ASSIGN) as any, async
 
   const db = getDb(c.env.DB);
   const scopeRepo = new ScopeRepository(db);
-  const userRepo = new UserRepository(db);
+  const hierarchyRepo = new HierarchyRepository(db);
+  const outletRepo = new OutletRepository(db);
   const auditRepo = new AuditRepository(db);
 
-  // Fetch scope first and verify actor authority before deletion!
+  // 1. Fetch scope assignment first
   const allScopes = await scopeRepo.listAllScopes();
   const targetScope = allScopes.find(s => s.id === scopeId);
   if (!targetScope) {
     return c.json({ success: false, data: null, error: { code: 'NOT_FOUND', message: 'Scope assignment record not found' } }, 404);
   }
 
-  // Prevent self scope deletion if non-global
+  // 2. Prevent self scope deletion if non-global
   if (targetScope.userId === c.var.user.user.id && !c.var.user.isGlobalScope) {
     return c.json({ success: false, data: null, error: { code: 'FORBIDDEN', message: 'You cannot revoke your own organizational scope assignments.' } }, 403);
   }
 
-  const canManageTarget = await ScopeService.canManageUser(c.var.user, targetScope.userId, userRepo, scopeRepo);
-  if (!canManageTarget) {
-    return c.json({ success: false, data: null, error: { code: 'FORBIDDEN', message: 'You do not have administrative authority to manage this target user.' } }, 403);
+  // 3. SAFE MULTI-SCOPE DELETION CHECK:
+  // Actor must have authority over the EXACT target scope assignment.
+  // A West Bengal administrator must NOT be able to delete a Punjab scope merely
+  // because the same user also has a West Bengal scope.
+  const canDelete = await ScopeService.canDeleteScopeAssignment(c.var.user, targetScope, hierarchyRepo, outletRepo);
+  if (!canDelete) {
+    return c.json({
+      success: false,
+      data: null,
+      error: { code: 'FORBIDDEN', message: 'You do not have administrative authority over this specific scope assignment.' },
+    }, 403);
   }
 
   const nowIso = new Date().toISOString();

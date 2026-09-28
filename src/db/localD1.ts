@@ -109,8 +109,15 @@ export class LocalD1Database {
       duration: 1,
     };
   }
+  close(): void {
+    try {
+      this.db.close();
+    } catch (e) {
+      // ignore if already closed
+    }
+  }
 }
 
-export function createLocalD1Database(dbPath = './.sqlite/iocl_local.db'): D1Database {
-  return new LocalD1Database(dbPath) as unknown as D1Database;
+export function createLocalD1Database(dbPath = './.sqlite/iocl_local.db'): D1Database & { close: () => void } {
+  return new LocalD1Database(dbPath) as unknown as D1Database & { close: () => void };
 }

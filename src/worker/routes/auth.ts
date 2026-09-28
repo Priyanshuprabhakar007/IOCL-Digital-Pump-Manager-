@@ -12,16 +12,36 @@ import { COOKIE_NAME, SESSION_DURATION_HOURS } from '../../shared/constants';
 
 const auth = new Hono<{ Bindings: EnvBindings }>();
 
-// Simple in-memory rate limiter for login protection
-const failedLoginAttempts = new Map<string, { count: number; resetAt: number }>();
+// ============================================================================
+// RATE LIMITING STRATEGY
+// ============================================================================
+// PRODUCTION CLOUDFLARE ENVIRONMENT:
+// In-memory JavaScript Maps are isolate-ephemeral and not shared across Cloudflare
+// edge datacenters. Production distributed rate limiting MUST be configured via
+// Cloudflare WAF Rate Limiting Rules in the Cloudflare Dashboard:
+//
+// 1. Rule Name: "Protect Login Endpoint Rate Limit"
+// 2. Field Match: (http.request.uri.path eq "/api/v1/auth/login" and http.request.method eq "POST")
+// 3. Counting Characteristic: IP Address
+// 4. Rate Threshold: 5 requests per 1 minute (or 10 requests per 5 minutes)
+// 5. Action: Block (period: 300 seconds) or Managed Challenge
+//
+// LOCAL DEVELOPMENT FALLBACK:
+// The below Map serves purely as a local developer-environment fallback.
+// It is explicitly NOT production security.
+// ============================================================================
+const localDevLoginLimiter = new Map<string, { count: number; resetAt: number }>();
+
+// Pre-computed dummy bcrypt hash (cost 10) to ensure constant-time response for non-existent emails
+const DUMMY_BCRYPT_HASH = '$2a$10$7EqJtq98hPqEX7fNZaFWoOhiIflV8qF3oK3d2gB0P5s8p4X8W8J3m';
 
 auth.post('/login', async (c) => {
   const ipAddress = c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for') || '127.0.0.1';
   const nowMs = Date.now();
 
-  // Check rate limit
+  // Local development rate limiter check
   const rateLimitKey = `login:${ipAddress}`;
-  const record = failedLoginAttempts.get(rateLimitKey);
+  const record = localDevLoginLimiter.get(rateLimitKey);
   if (record) {
     if (nowMs < record.resetAt) {
       if (record.count >= 5) {
@@ -32,7 +52,7 @@ auth.post('/login', async (c) => {
         }, 429);
       }
     } else {
-      failedLoginAttempts.delete(rateLimitKey);
+      localDevLoginLimiter.delete(rateLimitKey);
     }
   }
 
@@ -61,13 +81,18 @@ auth.post('/login', async (c) => {
   const authUser = await userRepo.findPasswordHashByEmail(email);
 
   const trackFailedAttempt = () => {
-    const cur = failedLoginAttempts.get(rateLimitKey) || { count: 0, resetAt: nowMs + 5 * 60 * 1000 };
+    const cur = localDevLoginLimiter.get(rateLimitKey) || { count: 0, resetAt: nowMs + 5 * 60 * 1000 };
     cur.count += 1;
-    failedLoginAttempts.set(rateLimitKey, cur);
+    localDevLoginLimiter.set(rateLimitKey, cur);
   };
 
-  // Do not disclose whether email exists or account is disabled specifically
-  if (!authUser) {
+  // Anti-Enumeration & Constant-Time Verification:
+  // If the user does not exist, run bcrypt against the dummy hash to prevent timing attacks.
+  // Never reveal whether the email exists before valid password verification.
+  const hashToCompare = authUser ? authUser.passwordHash : DUMMY_BCRYPT_HASH;
+  const passwordValid = bcrypt.compareSync(password, hashToCompare);
+
+  if (!authUser || !passwordValid) {
     trackFailedAttempt();
     return c.json({
       success: false,
@@ -76,6 +101,9 @@ auth.post('/login', async (c) => {
     }, 401);
   }
 
+  // Account status check is ONLY performed AFTER password verification succeeds!
+  // This guarantees unknown email + wrong password and existing email + wrong password
+  // produce strictly identical external behavior.
   if (authUser.user.status !== 'ACTIVE') {
     trackFailedAttempt();
     return c.json({
@@ -85,18 +113,8 @@ auth.post('/login', async (c) => {
     }, 403);
   }
 
-  const passwordValid = bcrypt.compareSync(password, authUser.passwordHash);
-  if (!passwordValid) {
-    trackFailedAttempt();
-    return c.json({
-      success: false,
-      data: null,
-      error: { code: 'INVALID_CREDENTIALS', message: 'Invalid email or password.' },
-    }, 401);
-  }
-
-  // Successful login -> clear rate limit record
-  failedLoginAttempts.delete(rateLimitKey);
+  // Successful login -> clear local rate limit record
+  localDevLoginLimiter.delete(rateLimitKey);
 
   // Create Session
   const rawToken = crypto.randomUUID() + '-' + crypto.randomUUID();

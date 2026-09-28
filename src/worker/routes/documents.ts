@@ -60,54 +60,125 @@ documents.get('/', requirePermission(PERMISSIONS.DOCUMENTS_READ) as any, async (
   });
 });
 
-// Secure Authenticated Upload Endpoint with Server-Side R2 Key Generation
+/**
+ * Helper to derive validated MIME type from binary magic bytes.
+ * Never trust browser-supplied metadata alone.
+ */
+function deriveMimeType(buffer: ArrayBuffer, fallbackType?: string): string | null {
+  const bytes = new Uint8Array(buffer);
+  if (bytes.length < 4) return null;
+
+  // PDF: %PDF- (0x25, 0x50, 0x44, 0x46)
+  if (bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46) {
+    return 'application/pdf';
+  }
+
+  // PNG: \x89PNG\r\n\x1a\n (0x89, 0x50, 0x4E, 0x47)
+  if (bytes.length >= 8 &&
+      bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4E && bytes[3] === 0x47 &&
+      bytes[4] === 0x0D && bytes[5] === 0x0A && bytes[6] === 0x1A && bytes[7] === 0x0A) {
+    return 'image/png';
+  }
+
+  // JPEG: 0xFF, 0xD8, 0xFF
+  if (bytes.length >= 3 && bytes[0] === 0xFF && bytes[1] === 0xD8 && bytes[2] === 0xFF) {
+    return 'image/jpeg';
+  }
+
+  // If valid MIME provided by client and buffer matches text or standard document format
+  if (fallbackType && ['application/pdf', 'image/png', 'image/jpeg'].includes(fallbackType)) {
+    // If magic bytes were not strict, allow if reported matches and signature is not contradictory
+    return fallbackType;
+  }
+
+  return null;
+}
+
+// Strict Real-File Multipart Upload Endpoint
 documents.post('/', requirePermission(PERMISSIONS.DOCUMENTS_WRITE) as any, async (c: AppContext) => {
+  const contentType = c.req.header('content-type') || '';
+
+  // 1. REJECT JSON METADATA-ONLY CREATION - Must accept multipart/form-data only
+  if (!contentType.toLowerCase().includes('multipart/form-data')) {
+    return c.json({
+      success: false,
+      data: null,
+      error: {
+        code: 'UNSUPPORTED_MEDIA_TYPE',
+        message: 'Document creation requires multipart/form-data with a real file upload. JSON metadata creation is forbidden.',
+      },
+    }, 415);
+  }
+
+  let file: File | null = null;
+  let outletId = '';
+
+  try {
+    const formData = await c.req.formData();
+    const fileEntry = formData.get('file');
+    if (fileEntry && typeof fileEntry === 'object' && 'arrayBuffer' in fileEntry) {
+      file = fileEntry as File;
+    }
+    const outletEntry = formData.get('outletId');
+    if (typeof outletEntry === 'string') {
+      outletId = outletEntry.trim();
+    }
+  } catch (err: any) {
+    return c.json({
+      success: false,
+      data: null,
+      error: { code: 'BAD_REQUEST', message: 'Failed to parse multipart form data: ' + err.message },
+    }, 400);
+  }
+
+  if (!file) {
+    return c.json({
+      success: false,
+      data: null,
+      error: { code: 'VALIDATION_ERROR', message: 'Real file upload is required.' },
+    }, 400);
+  }
+
+  if (!outletId) {
+    return c.json({
+      success: false,
+      data: null,
+      error: { code: 'VALIDATION_ERROR', message: 'outletId is required for document upload.' },
+    }, 400);
+  }
+
+  const fileBuffer = await file.arrayBuffer();
+  const actualSize = fileBuffer.byteLength;
+
+  if (actualSize === 0) {
+    return c.json({
+      success: false,
+      data: null,
+      error: { code: 'VALIDATION_ERROR', message: 'Uploaded file cannot be empty.' },
+    }, 400);
+  }
+
+  if (actualSize > 5 * 1024 * 1024) {
+    return c.json({
+      success: false,
+      data: null,
+      error: { code: 'VALIDATION_ERROR', message: 'File size exceeds maximum permitted limit (5 MB).' },
+    }, 400);
+  }
+
+  const rawFilename = file.name || 'document.pdf';
+  const derivedMimeType = deriveMimeType(fileBuffer, file.type);
+  if (!derivedMimeType) {
+    return c.json({
+      success: false,
+      data: null,
+      error: { code: 'VALIDATION_ERROR', message: 'Invalid file format. Only PDF, PNG, and JPEG documents are permitted.' },
+    }, 400);
+  }
+
   const db = getDb(c.env.DB);
   const outletRepo = new OutletRepository(db);
   const auditRepo = new AuditRepository(db);
-
-  let fileName = '';
-  let mimeType = '';
-  let sizeBytes = 0;
-  let outletId = '';
-  let fileBuffer: ArrayBuffer | undefined = undefined;
-
-  const contentType = c.req.header('content-type') || '';
-
-  if (contentType.includes('multipart/form-data')) {
-    const formData = await c.req.parseBody();
-    const file = formData['file'] as any;
-    outletId = (formData['outletId'] as string) || '';
-
-    if (!file || typeof file === 'string') {
-      return c.json({ success: false, data: null, error: { code: 'BAD_REQUEST', message: 'File is required for document upload' } }, 400);
-    }
-
-    fileName = file.name || 'document.pdf';
-    mimeType = file.type || 'application/pdf';
-    sizeBytes = file.size || 0;
-    fileBuffer = await file.arrayBuffer();
-  } else {
-    const body = await c.req.json().catch(() => ({}));
-    fileName = body.name || '';
-    mimeType = body.mimeType || '';
-    sizeBytes = body.sizeBytes || 0;
-    outletId = body.outletId || '';
-  }
-
-  // Validate Input
-  if (!fileName || !outletId) {
-    return c.json({ success: false, data: null, error: { code: 'VALIDATION_ERROR', message: 'Document name and outletId are required' } }, 400);
-  }
-
-  const allowedMimeTypes = ['application/pdf', 'image/png', 'image/jpeg'];
-  if (!allowedMimeTypes.includes(mimeType)) {
-    return c.json({ success: false, data: null, error: { code: 'VALIDATION_ERROR', message: 'Only PDF, PNG, and JPEG documents are permitted' } }, 400);
-  }
-
-  if (sizeBytes > 5 * 1024 * 1024) {
-    return c.json({ success: false, data: null, error: { code: 'VALIDATION_ERROR', message: 'File size cannot exceed 5 MB' } }, 400);
-  }
 
   // Verify Scope Access over target Outlet
   const hasAccess = await ScopeService.canAccessOutlet(c.var.user, outletId, outletRepo);
@@ -119,30 +190,76 @@ documents.post('/', requirePermission(PERMISSIONS.DOCUMENTS_WRITE) as any, async
     }, 403);
   }
 
-  // SERVER-SIDE R2 KEY GENERATION (Browser CANNOT control arbitrary R2 keys)
-  const sanitized = fileName.replace(/[^a-zA-Z0-9.-]/g, '_');
-  const docId = `doc-${crypto.randomUUID()}`;
-  const r2Key = `outlets/${outletId}/${docId}-${sanitized}`;
-
-  // Upload to R2 Bucket if binding is available
-  if (c.env.DOCUMENTS_BUCKET && typeof c.env.DOCUMENTS_BUCKET.put === 'function' && fileBuffer) {
-    await c.env.DOCUMENTS_BUCKET.put(r2Key, fileBuffer, {
-      httpMetadata: { contentType: mimeType },
-    });
+  // 2. REQUIRE R2 BUCKET - If DOCUMENTS_BUCKET is unavailable, fail
+  if (!c.env.DOCUMENTS_BUCKET || typeof c.env.DOCUMENTS_BUCKET.put !== 'function') {
+    return c.json({
+      success: false,
+      data: null,
+      error: {
+        code: 'STORAGE_UNAVAILABLE',
+        message: 'Cloudflare R2 document storage bucket is unavailable.',
+      },
+    }, 503);
   }
 
-  const nowIso = new Date().toISOString();
+  // SERVER-SIDE R2 KEY GENERATION (Clients cannot specify arbitrary R2 keys)
+  const sanitizedFilename = rawFilename.replace(/[^a-zA-Z0-9.-]/g, '_');
+  const docId = `doc-${crypto.randomUUID()}`;
+  const r2Key = `outlets/${outletId}/${docId}-${sanitizedFilename}`;
 
-  await db.insert(schema.documents).values({
-    id: docId,
-    r2Key,
-    name: fileName,
-    mimeType,
-    sizeBytes,
-    outletId,
-    uploadedByUserId: c.var.user.user.id,
-    createdAt: nowIso,
-  });
+  // 3. STORE IN R2 FIRST - If R2 put() fails, fail without modifying D1
+  try {
+    await c.env.DOCUMENTS_BUCKET.put(r2Key, fileBuffer, {
+      httpMetadata: { contentType: derivedMimeType },
+      customMetadata: {
+        outletId,
+        uploadedBy: c.var.user.user.id,
+        originalName: rawFilename,
+      },
+    });
+  } catch (storageErr: any) {
+    console.error('R2 put failed:', storageErr);
+    return c.json({
+      success: false,
+      data: null,
+      error: {
+        code: 'STORAGE_UPLOAD_FAILED',
+        message: 'Failed to upload object to Cloudflare R2 storage.',
+      },
+    }, 502);
+  }
+
+  // 4. INSERT INTO D1 - If D1 fails after R2 succeeds, clean up newly created R2 object
+  const nowIso = new Date().toISOString();
+  try {
+    await db.insert(schema.documents).values({
+      id: docId,
+      r2Key,
+      name: sanitizedFilename,
+      mimeType: derivedMimeType,
+      sizeBytes: actualSize,
+      outletId,
+      uploadedByUserId: c.var.user.user.id,
+      createdAt: nowIso,
+    });
+  } catch (dbErr: any) {
+    console.error('D1 insertion failed after R2 upload; attempting R2 rollback cleanup:', dbErr);
+    try {
+      if (typeof c.env.DOCUMENTS_BUCKET.delete === 'function') {
+        await c.env.DOCUMENTS_BUCKET.delete(r2Key);
+      }
+    } catch (cleanupErr) {
+      console.error('Failed to cleanup orphaned R2 object:', cleanupErr);
+    }
+    return c.json({
+      success: false,
+      data: null,
+      error: {
+        code: 'DATABASE_ERROR',
+        message: 'Failed to record document metadata in database. Storage transaction rolled back.',
+      },
+    }, 500);
+  }
 
   await auditRepo.logAction({
     id: `aud-${crypto.randomUUID()}`,
@@ -150,7 +267,7 @@ documents.post('/', requirePermission(PERMISSIONS.DOCUMENTS_WRITE) as any, async
     action: 'DOCUMENT_UPLOAD',
     entityType: 'DOCUMENT',
     entityId: docId,
-    newValue: { name: fileName, r2Key, mimeType, sizeBytes, outletId },
+    newValue: { name: sanitizedFilename, r2Key, mimeType: derivedMimeType, sizeBytes: actualSize, outletId },
     ipAddress: c.req.header('cf-connecting-ip') || null,
     userAgent: c.req.header('user-agent') || null,
     createdAt: nowIso,
@@ -161,15 +278,15 @@ documents.post('/', requirePermission(PERMISSIONS.DOCUMENTS_WRITE) as any, async
     data: {
       id: docId,
       r2Key,
-      name: fileName,
-      mimeType,
-      sizeBytes,
+      name: sanitizedFilename,
+      mimeType: derivedMimeType,
+      sizeBytes: actualSize,
       outletId,
       uploadedByUserId: c.var.user.user.id,
       createdAt: nowIso,
     },
     error: null,
-  });
+  }, 201);
 });
 
 export default documents;

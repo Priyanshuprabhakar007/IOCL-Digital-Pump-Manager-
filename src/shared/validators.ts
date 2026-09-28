@@ -5,13 +5,25 @@ export const LoginSchema = z.object({
   password: z.string().min(6, 'Password must be at least 6 characters'),
 });
 
+export const ValidRoleCodes = [
+  'ADMIN',
+  'STATE_OFFICE',
+  'DIVISIONAL_OFFICE',
+  'BUSINESS_MANAGER',
+  'FIELD_OFFICER',
+  'DEALER',
+  'CSP',
+] as const;
+
+export const RoleCodeSchema = z.enum(ValidRoleCodes);
+
 export const UserCreateSchema = z.object({
   empCode: z.string().min(3, 'Employee code must be at least 3 characters'),
   name: z.string().min(2, 'Name is required'),
   email: z.string().email('Invalid email address'),
   phone: z.string().min(10, 'Phone number must be at least 10 digits'),
   password: z.string().min(8, 'Password must be at least 8 characters'),
-  roleCodes: z.array(z.string()).min(1, 'At least one role is required'),
+  roleCodes: z.array(RoleCodeSchema).min(1, 'At least one role is required'),
   status: z.enum(['ACTIVE', 'INACTIVE', 'SUSPENDED']).default('ACTIVE'),
 });
 
@@ -19,7 +31,7 @@ export const UserUpdateSchema = z.object({
   name: z.string().min(2).optional(),
   email: z.string().email().optional(),
   phone: z.string().min(10).optional(),
-  roleCodes: z.array(z.string()).optional(),
+  roleCodes: z.array(RoleCodeSchema).optional(),
   status: z.enum(['ACTIVE', 'INACTIVE', 'SUSPENDED']).optional(),
 });
 

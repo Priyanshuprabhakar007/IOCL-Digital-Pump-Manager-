@@ -111,6 +111,27 @@ export class UserRepository {
     createdAt: string;
     updatedAt: string;
   }): Promise<User> {
+    // 1. Resolve role IDs before user insertion; fail if not all mappings resolve
+    let roleMappings: { userId: string; roleId: string }[] = [];
+    if (data.roleCodes.length > 0) {
+      const foundRoles = await this.db
+        .select()
+        .from(schema.roles)
+        .where(inArray(schema.roles.code, data.roleCodes));
+
+      if (foundRoles.length !== data.roleCodes.length) {
+        const foundCodes = new Set(foundRoles.map(r => r.code));
+        const missing = data.roleCodes.filter(c => !foundCodes.has(c));
+        throw new Error(`Cannot resolve all requested role mappings: ${missing.join(', ')}`);
+      }
+
+      roleMappings = foundRoles.map(r => ({
+        userId: data.id,
+        roleId: r.id,
+      }));
+    }
+
+    // 2. Insert user record
     await this.db.insert(schema.users).values({
       id: data.id,
       empCode: data.empCode,
@@ -123,21 +144,9 @@ export class UserRepository {
       updatedAt: data.updatedAt,
     });
 
-    // Find role IDs for given role codes
-    if (data.roleCodes.length > 0) {
-      const foundRoles = await this.db
-        .select()
-        .from(schema.roles)
-        .where(inArray(schema.roles.code, data.roleCodes));
-
-      const roleMappings = foundRoles.map(r => ({
-        userId: data.id,
-        roleId: r.id,
-      }));
-
-      if (roleMappings.length > 0) {
-        await this.db.insert(schema.userRoles).values(roleMappings);
-      }
+    // 3. Insert user role assignments
+    if (roleMappings.length > 0) {
+      await this.db.insert(schema.userRoles).values(roleMappings);
     }
 
     return {

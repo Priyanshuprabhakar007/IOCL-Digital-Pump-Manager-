@@ -3,6 +3,8 @@ import bcrypt from 'bcryptjs';
 import { getDb } from '../../db';
 import { UserRepository } from '../repositories/userRepository';
 import { ScopeRepository } from '../repositories/scopeRepository';
+import { HierarchyRepository } from '../repositories/hierarchyRepository';
+import { OutletRepository } from '../repositories/outletRepository';
 import { AuditRepository } from '../repositories/auditRepository';
 import { requireAuth, AppContext, EnvBindings } from '../middleware/auth';
 import { requirePermission } from '../middleware/permission';
@@ -18,8 +20,11 @@ users.get('/', requirePermission(PERMISSIONS.USERS_READ) as any, async (c: AppCo
   const db = getDb(c.env.DB);
   const userRepo = new UserRepository(db);
   const scopeRepo = new ScopeRepository(db);
+  const hierarchyRepo = new HierarchyRepository(db);
+  const outletRepo = new OutletRepository(db);
 
-  const accessibleUsers = await ScopeService.getAccessibleUsers(c.var.user, userRepo, scopeRepo);
+  // Derive users within organizational scope hierarchy (State -> Division -> Sales Area -> Outlet)
+  const accessibleUsers = await ScopeService.getAccessibleUsers(c.var.user, userRepo, scopeRepo, hierarchyRepo, outletRepo);
 
   const userListWithRoles = await Promise.all(
     accessibleUsers.map(async (u) => {
@@ -50,7 +55,7 @@ users.post('/', requirePermission(PERMISSIONS.USERS_CREATE) as any, async (c: Ap
       data: null,
       error: {
         code: 'VALIDATION_ERROR',
-        message: 'Invalid user payload',
+        message: 'Invalid user payload: roleCodes must be a valid enum of known system roles and required fields must be present.',
         details: parseResult.error.flatten(),
       },
     }, 400);
@@ -61,7 +66,7 @@ users.post('/', requirePermission(PERMISSIONS.USERS_CREATE) as any, async (c: Ap
   const userRepo = new UserRepository(db);
   const auditRepo = new AuditRepository(db);
 
-  // Role Ceiling Check
+  // Role Ceiling Check: lower roles cannot grant roles above their administrative level
   const roleCheck = ScopeService.validateRoleCeiling(c.var.user, payload.roleCodes);
   if (!roleCheck.allowed) {
     return c.json({
@@ -84,18 +89,27 @@ users.post('/', requirePermission(PERMISSIONS.USERS_CREATE) as any, async (c: Ap
   const nowIso = new Date().toISOString();
   const userId = `usr-${crypto.randomUUID()}`;
 
-  const newUser = await userRepo.createUser({
-    id: userId,
-    empCode: payload.empCode,
-    name: payload.name,
-    email: payload.email,
-    phone: payload.phone,
-    passwordHash,
-    status: payload.status,
-    roleCodes: payload.roleCodes,
-    createdAt: nowIso,
-    updatedAt: nowIso,
-  });
+  let newUser;
+  try {
+    newUser = await userRepo.createUser({
+      id: userId,
+      empCode: payload.empCode,
+      name: payload.name,
+      email: payload.email,
+      phone: payload.phone,
+      passwordHash,
+      status: payload.status,
+      roleCodes: payload.roleCodes,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    });
+  } catch (err: any) {
+    return c.json({
+      success: false,
+      data: null,
+      error: { code: 'ROLE_MAPPING_ERROR', message: err.message || 'Failed to resolve all requested role mappings.' },
+    }, 400);
+  }
 
   await auditRepo.logAction({
     id: `aud-${crypto.randomUUID()}`,
@@ -113,7 +127,7 @@ users.post('/', requirePermission(PERMISSIONS.USERS_CREATE) as any, async (c: Ap
     success: true,
     data: newUser,
     error: null,
-  });
+  }, 201);
 });
 
 users.patch('/:id/status', requirePermission(PERMISSIONS.USERS_UPDATE) as any, async (c: AppContext) => {
@@ -149,15 +163,20 @@ users.patch('/:id/status', requirePermission(PERMISSIONS.USERS_UPDATE) as any, a
   const db = getDb(c.env.DB);
   const userRepo = new UserRepository(db);
   const scopeRepo = new ScopeRepository(db);
+  const hierarchyRepo = new HierarchyRepository(db);
+  const outletRepo = new OutletRepository(db);
   const auditRepo = new AuditRepository(db);
 
-  // Scope check: Actor must have authority to manage target user
-  const canManage = await ScopeService.canManageUser(c.var.user, targetUserId, userRepo, scopeRepo);
-  if (!canManage) {
+  // SAFE MULTI-SCOPE CHECK:
+  // A target user can have multiple independent scopes.
+  // A non-global administrator CANNOT manage/disable a target user simply because ONE scope overlaps.
+  // ALL target user scopes must be within the actor's authority!
+  const canModify = await ScopeService.canModifyUser(c.var.user, targetUserId, userRepo, scopeRepo, hierarchyRepo, outletRepo);
+  if (!canModify) {
     return c.json({
       success: false,
       data: null,
-      error: { code: 'FORBIDDEN', message: 'Target user is outside your authorized organizational scope.' },
+      error: { code: 'FORBIDDEN', message: 'Target user holds organizational scopes outside your administrative authority.' },
     }, 403);
   }
 
