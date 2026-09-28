@@ -518,3 +518,118 @@ export const shiftStockReconciliations = sqliteTable('shift_stock_reconciliation
   index('idx_ssr_shift_id').on(table.operationalShiftId),
   index('idx_ssr_outlet_id').on(table.outletId),
 ]);
+
+export const outletProductPrices = sqliteTable('outlet_product_prices', {
+  id: text('id').primaryKey(),
+  outletId: text('outlet_id').notNull().references(() => retailOutlets.id),
+  productId: text('product_id').notNull().references(() => products.id),
+  pricePaisePerUnit: integer('price_paise_per_unit').notNull(),
+  effectiveFrom: text('effective_from').notNull(),
+  effectiveTo: text('effective_to'),
+  status: text('status', { enum: ['ACTIVE', 'INACTIVE'] }).notNull().default('ACTIVE'),
+  createdAt: text('created_at').notNull(),
+  createdBy: text('created_by').notNull(),
+});
+
+export const operationalShiftProductPrices = sqliteTable('operational_shift_product_prices', {
+  id: text('id').primaryKey(),
+  operationalShiftId: text('operational_shift_id').notNull().references(() => operationalShifts.id),
+  outletId: text('outlet_id').notNull().references(() => retailOutlets.id),
+  productId: text('product_id').notNull().references(() => products.id),
+  productCode: text('product_code').notNull(),
+  productName: text('product_name').notNull(),
+  unit: text('unit').notNull(),
+  pricePaisePerUnit: integer('price_paise_per_unit').notNull(),
+  sourcePriceId: text('source_price_id').notNull(),
+  createdAt: text('created_at').notNull(),
+}, (table) => [
+  uniqueIndex('idx_shift_product_price').on(table.operationalShiftId, table.productId),
+]);
+
+export const creditParties = sqliteTable('credit_parties', {
+  id: text('id').primaryKey(),
+  outletId: text('outlet_id').notNull().references(() => retailOutlets.id),
+  partyCode: text('party_code').notNull(),
+  partyName: text('party_name').notNull(),
+  contactName: text('contact_name'),
+  phone: text('phone'),
+  status: text('status', { enum: ['ACTIVE', 'INACTIVE'] }).notNull().default('ACTIVE'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+  createdBy: text('created_by').notNull(),
+}, (table) => [
+  uniqueIndex('idx_outlet_party_code').on(table.outletId, table.partyCode),
+]);
+
+export const shiftCollections = sqliteTable('shift_collections', {
+  id: text('id').primaryKey(),
+  operationalShiftId: text('operational_shift_id').notNull().references(() => operationalShifts.id),
+  outletId: text('outlet_id').notNull().references(() => retailOutlets.id),
+  collectionType: text('collection_type', { enum: ['CASH', 'POS_CARD', 'UPI', 'FLEET_CARD', 'CREDIT_SALE', 'DIRECT_BANK_DROP'] }).notNull(),
+  amountPaise: integer('amount_paise').notNull(),
+  provider: text('provider'),
+  referenceNumber: text('reference_number'),
+  creditPartyId: text('credit_party_id').references(() => creditParties.id),
+  collectedAt: text('collected_at').notNull(),
+  recordedByUserId: text('recorded_by_user_id').notNull(),
+  notes: text('notes'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});
+
+export const cashHandoverLogs = sqliteTable('cash_handover_logs', {
+  id: text('id').primaryKey(),
+  operationalShiftId: text('operational_shift_id').notNull().references(() => operationalShifts.id),
+  outletId: text('outlet_id').notNull().references(() => retailOutlets.id),
+  amountPaise: integer('amount_paise').notNull(),
+  handedOverByUserId: text('handed_over_by_user_id').notNull(),
+  receivedByUserId: text('received_by_user_id'),
+  handedOverAt: text('handed_over_at').notNull(),
+  receivedAt: text('received_at'),
+  status: text('status', { enum: ['PENDING', 'ACKNOWLEDGED', 'DISPUTED'] }).notNull().default('PENDING'),
+  notes: text('notes'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});
+
+export const bankDeposits = sqliteTable('bank_deposits', {
+  id: text('id').primaryKey(),
+  outletId: text('outlet_id').notNull().references(() => retailOutlets.id),
+  operationalShiftId: text('operational_shift_id').notNull().references(() => operationalShifts.id),
+  depositChannel: text('deposit_channel', { enum: ['BANK_BRANCH', 'CASH_DROP_BOX'] }).notNull(),
+  amountPaise: integer('amount_paise').notNull(),
+  depositDate: text('deposit_date').notNull(),
+  referenceNumber: text('reference_number'),
+  documentId: text('document_id'),
+  status: text('status', { enum: ['SUBMITTED', 'VERIFIED', 'REJECTED'] }).notNull().default('SUBMITTED'),
+  recordedByUserId: text('recorded_by_user_id').notNull(),
+  verifiedByUserId: text('verified_by_user_id'),
+  verifiedAt: text('verified_at'),
+  rejectionReason: text('rejection_reason'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});
+
+export const shiftFinancialReconciliations = sqliteTable('shift_financial_reconciliations', {
+  id: text('id').primaryKey(),
+  operationalShiftId: text('operational_shift_id').notNull().references(() => operationalShifts.id).unique(),
+  outletId: text('outlet_id').notNull().references(() => retailOutlets.id),
+  fuelSalesRevenuePaise: integer('fuel_sales_revenue_paise').notNull(),
+  cngSalesRevenuePaise: integer('cng_sales_revenue_paise'),
+  lubeSalesRevenuePaise: integer('lube_sales_revenue_paise'),
+  authoritativeSalesRevenuePaise: integer('authoritative_sales_revenue_paise').notNull(),
+  cashCollectionPaise: integer('cash_collection_paise').notNull(),
+  posCollectionPaise: integer('pos_collection_paise').notNull(),
+  upiCollectionPaise: integer('upi_collection_paise').notNull(),
+  fleetCardCollectionPaise: integer('fleet_card_collection_paise').notNull(),
+  creditSalesPaise: integer('credit_sales_paise').notNull(),
+  directBankDropPaise: integer('direct_bank_drop_paise').notNull(),
+  totalCollectionsPaise: integer('total_collections_paise').notNull(),
+  salesCollectionVariancePaise: integer('sales_collection_variance_paise').notNull(),
+  varianceStatus: text('variance_status', { enum: ['BALANCED', 'SHORTAGE', 'EXCESS'] }).notNull(),
+  varianceReason: text('variance_reason'),
+  calculatedAt: text('calculated_at').notNull(),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});
+
