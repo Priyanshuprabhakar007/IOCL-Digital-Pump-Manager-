@@ -1150,5 +1150,173 @@ describe('Phase 2B Final Integrity Suite', () => {
     );
     expect(openRes4.status).toBe(201);
   });
+
+  it('22. Shift changing to CLOSING after precheck leaves no header or lines', async () => {
+    const { cookie } = await loginAs('dealer.parkstreet@iocl.in');
+    const db = getDb(localD1);
+    const pumpRepo = new PumpRepository(db);
+
+    const openRes = await app.fetch(
+      new Request('http://localhost/api/v1/outlets/ro-1001/shifts/open', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: cookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({ shiftTemplateId: 'st-ro1-1', businessDate: '2026-12-10' }),
+      }),
+      env
+    );
+    const shiftId = (await openRes.json() as any).data.id;
+
+    // Simulate race where shift status is set to CLOSING right before receipt creation batch
+    await db.run(sql`UPDATE operational_shifts SET status = 'CLOSING' WHERE id = ${shiftId}`);
+
+    const receiptRes = await pumpRepo.createFuelReceiptConditional({
+      id: 'rcpt-race-1',
+      outletId: 'ro-1001',
+      operationalShiftId: shiftId,
+      ttNumber: 'TT-RACE-1',
+      invoiceNumber: 'INV-RACE-1',
+      invoiceDate: '2026-12-10',
+      arrivalAt: '2026-12-10T10:00:00Z',
+      sealVerified: true,
+      recordedByUserId: 'user-dealer',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }, [{
+      id: 'line-race-1',
+      fuelReceiptId: 'rcpt-race-1',
+      tankId: 'tank-ro1-1',
+      productId: 'prod-ms',
+      invoiceQuantityMilliunits: 5000000,
+      qualityStatus: 'PASS',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }]);
+
+    expect(receiptRes.success).toBe(false);
+    expect(receiptRes.shiftClosed).toBe(true);
+
+    const [header] = await db.select().from(schema.fuelReceipts).where(eq(schema.fuelReceipts.id, 'rcpt-race-1'));
+    expect(header).toBeUndefined();
+    const lines = await db.select().from(schema.fuelReceiptTankLines).where(eq(schema.fuelReceiptTankLines.fuelReceiptId, 'rcpt-race-1'));
+    expect(lines.length).toBe(0);
+  });
+
+  it('23. Duplicate receipt ID failure does not delete existing receipt', async () => {
+    const { cookie } = await loginAs('dealer.parkstreet@iocl.in');
+    const db = getDb(localD1);
+    const pumpRepo = new PumpRepository(db);
+
+    const openRes = await app.fetch(
+      new Request('http://localhost/api/v1/outlets/ro-1001/shifts/open', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: cookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({ shiftTemplateId: 'st-ro1-1', businessDate: '2026-12-11' }),
+      }),
+      env
+    );
+    const shiftId = (await openRes.json() as any).data.id;
+
+    // Create first valid receipt
+    const res1 = await pumpRepo.createFuelReceiptConditional({
+      id: 'rcpt-dup-1',
+      outletId: 'ro-1001',
+      operationalShiftId: shiftId,
+      ttNumber: 'TT-DUP-1',
+      invoiceNumber: 'INV-DUP-1',
+      invoiceDate: '2026-12-11',
+      arrivalAt: '2026-12-11T10:00:00Z',
+      sealVerified: true,
+      recordedByUserId: 'user-dealer',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }, [{
+      id: 'line-dup-1',
+      fuelReceiptId: 'rcpt-dup-1',
+      tankId: 'tank-ro1-1',
+      productId: 'prod-ms',
+      invoiceQuantityMilliunits: 5000000,
+      qualityStatus: 'PASS',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }]);
+    expect(res1.success).toBe(true);
+
+    // Attempt to create receipt with same ID 'rcpt-dup-1' -> should fail due to unique constraint on primary key
+    const res2 = await pumpRepo.createFuelReceiptConditional({
+      id: 'rcpt-dup-1',
+      outletId: 'ro-1001',
+      operationalShiftId: shiftId,
+      ttNumber: 'TT-DUP-2',
+      invoiceNumber: 'INV-DUP-2',
+      invoiceDate: '2026-12-11',
+      arrivalAt: '2026-12-11T11:00:00Z',
+      sealVerified: true,
+      recordedByUserId: 'user-dealer',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }, [{
+      id: 'line-dup-2',
+      fuelReceiptId: 'rcpt-dup-1',
+      tankId: 'tank-ro1-1',
+      productId: 'prod-ms',
+      invoiceQuantityMilliunits: 5000000,
+      qualityStatus: 'PASS',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }]);
+
+    expect(res2.success).toBe(false);
+
+    // Confirm existing receipt 'rcpt-dup-1' was NOT deleted by manual cleanup
+    const [existing] = await db.select().from(schema.fuelReceipts).where(eq(schema.fuelReceipts.id, 'rcpt-dup-1'));
+    expect(existing).toBeDefined();
+    expect(existing.ttNumber).toBe('TT-DUP-1');
+  });
+
+  it('24. Genuine line FK failure rolls back header and lines', async () => {
+    const { cookie } = await loginAs('dealer.parkstreet@iocl.in');
+    const db = getDb(localD1);
+    const pumpRepo = new PumpRepository(db);
+
+    const openRes = await app.fetch(
+      new Request('http://localhost/api/v1/outlets/ro-1001/shifts/open', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: cookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({ shiftTemplateId: 'st-ro1-1', businessDate: '2026-12-12' }),
+      }),
+      env
+    );
+    const shiftId = (await openRes.json() as any).data.id;
+
+    const res = await pumpRepo.createFuelReceiptConditional({
+      id: 'rcpt-fk-1',
+      outletId: 'ro-1001',
+      operationalShiftId: shiftId,
+      ttNumber: 'TT-FK-1',
+      invoiceNumber: 'INV-FK-1',
+      invoiceDate: '2026-12-12',
+      arrivalAt: '2026-12-12T10:00:00Z',
+      sealVerified: true,
+      recordedByUserId: 'user-dealer',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }, [{
+      id: 'line-fk-1',
+      fuelReceiptId: 'rcpt-fk-1',
+      tankId: 'non-existent-tank',
+      productId: 'prod-ms',
+      invoiceQuantityMilliunits: 5000000,
+      qualityStatus: 'PASS',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }]);
+
+    expect(res.success).toBe(false);
+
+    const [header] = await db.select().from(schema.fuelReceipts).where(eq(schema.fuelReceipts.id, 'rcpt-fk-1'));
+    expect(header).toBeUndefined();
+    const lines = await db.select().from(schema.fuelReceiptTankLines).where(eq(schema.fuelReceiptTankLines.fuelReceiptId, 'rcpt-fk-1'));
+    expect(lines.length).toBe(0);
+  });
 });
 

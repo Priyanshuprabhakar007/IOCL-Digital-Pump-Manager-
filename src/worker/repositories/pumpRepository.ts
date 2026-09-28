@@ -1981,21 +1981,30 @@ export class PumpRepository {
       return { success: false, receipt: null, shiftClosed: true, error: 'SHIFT_CLOSED' };
     }
 
-    const headerInsert = this.db.insert(schema.fuelReceipts).values({
-      id: receiptData.id,
-      outletId: receiptData.outletId,
-      operationalShiftId: receiptData.operationalShiftId,
-      ttNumber: receiptData.ttNumber,
-      invoiceNumber: receiptData.invoiceNumber,
-      invoiceDate: receiptData.invoiceDate,
-      arrivalAt: receiptData.arrivalAt,
-      sealVerified: sealVerifiedNum === 1,
-      sealExceptionReason: receiptData.sealExceptionReason || null,
-      status: 'ARRIVED',
-      recordedByUserId: receiptData.recordedByUserId,
-      createdAt: receiptData.createdAt,
-      updatedAt: receiptData.updatedAt,
-    });
+    const conditionalHeaderInsert = this.db.insert(schema.fuelReceipts).select(
+      this.db.select({
+        id: sql<string>`${receiptData.id}`.as('id'),
+        outletId: sql<string>`${receiptData.outletId}`.as('outletId'),
+        operationalShiftId: schema.operationalShifts.id,
+        ttNumber: sql<string>`${receiptData.ttNumber}`.as('ttNumber'),
+        invoiceNumber: sql<string>`${receiptData.invoiceNumber}`.as('invoiceNumber'),
+        invoiceDate: sql<string>`${receiptData.invoiceDate}`.as('invoiceDate'),
+        arrivalAt: sql<string>`${receiptData.arrivalAt}`.as('arrivalAt'),
+        decantationStartedAt: sql<string | null>`null`.as('decantation_started_at'),
+        decantationCompletedAt: sql<string | null>`null`.as('decantation_completed_at'),
+        sealVerified: sql<boolean>`${sealVerifiedNum === 1}`.as('seal_verified'),
+        sealExceptionReason: sql<string | null>`${receiptData.sealExceptionReason || null}`.as('seal_exception_reason'),
+        status: sql<string>`'ARRIVED'`.as('status'),
+        recordedByUserId: sql<string>`${receiptData.recordedByUserId}`.as('recorded_by_user_id'),
+        createdAt: sql<string>`${receiptData.createdAt}`.as('created_at'),
+        updatedAt: sql<string>`${receiptData.updatedAt}`.as('updated_at'),
+      })
+      .from(schema.operationalShifts)
+      .where(and(
+        eq(schema.operationalShifts.id, receiptData.operationalShiftId),
+        eq(schema.operationalShifts.status, 'OPEN')
+      ))
+    );
 
     const lineInserts = linesData.map(line =>
       this.db.insert(schema.fuelReceiptTankLines).values({
@@ -2017,19 +2026,22 @@ export class PumpRepository {
     );
 
     try {
-      await (this.db as any).batch([headerInsert, ...lineInserts]);
+      await (this.db as any).batch([conditionalHeaderInsert, ...lineInserts]);
     } catch (err: any) {
-      try {
-        await this.db.delete(schema.fuelReceiptTankLines).where(eq(schema.fuelReceiptTankLines.fuelReceiptId, receiptData.id));
-        await this.db.delete(schema.fuelReceipts).where(eq(schema.fuelReceipts.id, receiptData.id));
-      } catch (cleanupErr) {}
-
-      return { success: false, receipt: null, shiftClosed: true, error: 'SHIFT_CLOSED' };
+      const [currentShift] = await this.db.select().from(schema.operationalShifts).where(eq(schema.operationalShifts.id, receiptData.operationalShiftId));
+      if (!currentShift || currentShift.status !== 'OPEN') {
+        return { success: false, receipt: null, shiftClosed: true, error: 'SHIFT_CLOSED' };
+      }
+      return { success: false, receipt: null, shiftClosed: false, error: 'RECEIPT_CREATE_FAILED' };
     }
 
     const created = await this.findFuelReceiptById(receiptData.id);
     if (!created) {
-      return { success: false, receipt: null, shiftClosed: true, error: 'SHIFT_CLOSED' };
+      const [currentShift] = await this.db.select().from(schema.operationalShifts).where(eq(schema.operationalShifts.id, receiptData.operationalShiftId));
+      if (!currentShift || currentShift.status !== 'OPEN') {
+        return { success: false, receipt: null, shiftClosed: true, error: 'SHIFT_CLOSED' };
+      }
+      return { success: false, receipt: null, shiftClosed: false, error: 'RECEIPT_CREATE_FAILED' };
     }
     return { success: true, receipt: created };
   }
