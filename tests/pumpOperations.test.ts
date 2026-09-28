@@ -5,7 +5,7 @@ import { createLocalD1Database } from '../src/db/localD1';
 import { getDb } from '../src/db';
 import { seedDatabase } from '../src/db/seed';
 import * as schema from '../src/db/schema';
-import { eq } from 'drizzle-orm';
+import { eq, and } from 'drizzle-orm';
 import fs from 'fs';
 
 describe('IOCL Digital Pump Manager Phase 2A Hardened Operations Suite', () => {
@@ -479,9 +479,17 @@ describe('IOCL Digital Pump Manager Phase 2A Hardened Operations Suite', () => {
     );
     expect(closeRes.status).toBe(200);
 
-    // 4. Now modify/deactivate nozzle nozz-ro1-1-1 and dispenser disp-ro1-1 in master tables
+    // 4. Now modify/deactivate nozzles nozz-ro1-1-1 & nozz-ro1-1-2 and dispenser disp-ro1-1 in master tables
     await app.fetch(
       new Request('http://localhost/api/v1/nozzles/nozz-ro1-1-1/status', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Cookie: dealerCookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({ status: 'DECOMMISSIONED' }),
+      }),
+      env
+    );
+    await app.fetch(
+      new Request('http://localhost/api/v1/nozzles/nozz-ro1-1-2/status', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', Cookie: dealerCookie, Origin: 'http://localhost:3000' },
         body: JSON.stringify({ status: 'DECOMMISSIONED' }),
@@ -873,5 +881,345 @@ describe('IOCL Digital Pump Manager Phase 2A Hardened Operations Suite', () => {
     for (const code of requiredPermissions) {
       expect(permCodes.has(code)).toBe(true);
     }
+  });
+
+  // 14. Inactive tank nozzle is excluded from new shift snapshot
+  it('14. Inactive tank nozzle is excluded from new shift snapshot', async () => {
+    const { cookie: dealerCookie } = await loginAs('dealer.parkstreet@iocl.in');
+    const db = getDb(localD1);
+
+    // Set tank 1 (MS) status to INACTIVE directly in DB
+    await db.update(schema.tanks).set({ status: 'INACTIVE' }).where(eq(schema.tanks.id, 'tank-ro1-1'));
+
+    const openRes = await app.fetch(
+      new Request('http://localhost/api/v1/outlets/ro-1001/shifts/open', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: dealerCookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({
+          shiftTemplateId: 'st-ro1-1',
+          businessDate: '2026-10-10',
+        }),
+      }),
+      env
+    );
+    expect(openRes.status).toBe(201);
+    const shiftId = ((await openRes.json()) as any).data.id;
+
+    const { PumpRepository } = await import('../src/worker/repositories/pumpRepository');
+    const pumpRepo = new PumpRepository(db);
+    const snapshots = await pumpRepo.listShiftNozzleSnapshots(shiftId);
+
+    // Only HSD nozzles from tank-ro1-2 (ACTIVE) should be snapshotted
+    expect(snapshots.length).toBe(2);
+    for (const snap of snapshots) {
+      expect(snap.tankId).toBe('tank-ro1-2');
+      expect(snap.productCode).toBe('HSD');
+    }
+  });
+
+  // 15. Inactive product nozzle is excluded from new shift snapshot
+  it('15. Inactive product nozzle is excluded from new shift snapshot', async () => {
+    const { cookie: dealerCookie } = await loginAs('dealer.parkstreet@iocl.in');
+    const db = getDb(localD1);
+
+    // Set Product MS status to INACTIVE in DB
+    await db.update(schema.products).set({ status: 'INACTIVE' }).where(eq(schema.products.id, 'prod-ms'));
+
+    const openRes = await app.fetch(
+      new Request('http://localhost/api/v1/outlets/ro-1001/shifts/open', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: dealerCookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({
+          shiftTemplateId: 'st-ro1-1',
+          businessDate: '2026-10-11',
+        }),
+      }),
+      env
+    );
+    expect(openRes.status).toBe(201);
+    const shiftId = ((await openRes.json()) as any).data.id;
+
+    const { PumpRepository } = await import('../src/worker/repositories/pumpRepository');
+    const pumpRepo = new PumpRepository(db);
+    const snapshots = await pumpRepo.listShiftNozzleSnapshots(shiftId);
+
+    // Only HSD nozzles should be snapshotted
+    expect(snapshots.length).toBe(2);
+    for (const snap of snapshots) {
+      expect(snap.productCode).toBe('HSD');
+    }
+  });
+
+  // 16. Inactive outlet-product mapping nozzle is excluded
+  it('16. Inactive outlet-product mapping nozzle is excluded from new shift snapshot', async () => {
+    const { cookie: dealerCookie } = await loginAs('dealer.parkstreet@iocl.in');
+    const db = getDb(localD1);
+
+    // Set outlet product mapping for MS to INACTIVE in DB
+    await db
+      .update(schema.outletProducts)
+      .set({ status: 'INACTIVE' })
+      .where(and(eq(schema.outletProducts.outletId, 'ro-1001'), eq(schema.outletProducts.productId, 'prod-ms')));
+
+    const openRes = await app.fetch(
+      new Request('http://localhost/api/v1/outlets/ro-1001/shifts/open', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: dealerCookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({
+          shiftTemplateId: 'st-ro1-1',
+          businessDate: '2026-10-12',
+        }),
+      }),
+      env
+    );
+    expect(openRes.status).toBe(201);
+    const shiftId = ((await openRes.json()) as any).data.id;
+
+    const { PumpRepository } = await import('../src/worker/repositories/pumpRepository');
+    const pumpRepo = new PumpRepository(db);
+    const snapshots = await pumpRepo.listShiftNozzleSnapshots(shiftId);
+
+    expect(snapshots.length).toBe(2);
+    for (const snap of snapshots) {
+      expect(snap.productCode).toBe('HSD');
+    }
+  });
+
+  // 17. Zero valid nozzles prevents shift opening (409 NO_OPERATIONAL_NOZZLES)
+  it('17. Zero valid operational nozzles prevents shift opening and leaves no orphan shift (HTTP 409 NO_OPERATIONAL_NOZZLES)', async () => {
+    const { cookie: dealerCookie } = await loginAs('dealer.parkstreet@iocl.in');
+    const db = getDb(localD1);
+
+    // Deactivate all nozzles for ro-1001 in DB
+    await db.update(schema.nozzles).set({ status: 'INACTIVE' }).where(eq(schema.nozzles.outletId, 'ro-1001'));
+
+    const openRes = await app.fetch(
+      new Request('http://localhost/api/v1/outlets/ro-1001/shifts/open', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: dealerCookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({
+          shiftTemplateId: 'st-ro1-1',
+          businessDate: '2026-10-13',
+        }),
+      }),
+      env
+    );
+    expect(openRes.status).toBe(409);
+    const openJson = (await openRes.json()) as any;
+    expect(openJson.error.code).toBe('NO_OPERATIONAL_NOZZLES');
+
+    // Verify no open shift was inserted into DB
+    const allShifts = await db.select().from(schema.operationalShifts).where(eq(schema.operationalShifts.outletId, 'ro-1001'));
+    expect(allShifts.length).toBe(0);
+  });
+
+  // 18. KG product cannot create liquid tank (400 UNIT_NOT_SUPPORTED_BY_LIQUID_TANK)
+  it('18. Product measured in KG cannot create liquid tank (HTTP 400 UNIT_NOT_SUPPORTED_BY_LIQUID_TANK)', async () => {
+    const { cookie: dealerCookie } = await loginAs('dealer.parkstreet@iocl.in');
+
+    // Map CNG (KG unit) to ro-1001 first
+    await app.fetch(
+      new Request('http://localhost/api/v1/outlets/ro-1001/products', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: dealerCookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({ productId: 'prod-cng', status: 'ACTIVE' }),
+      }),
+      env
+    );
+
+    const createTankRes = await app.fetch(
+      new Request('http://localhost/api/v1/outlets/ro-1001/tanks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: dealerCookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({
+          tankNumber: 5,
+          name: 'CNG Cascade Tank',
+          productId: 'prod-cng',
+          capacityLitres: 10000,
+          safeFillCapacityLitres: 9000,
+          minimumOperatingLevelLitres: 500,
+          status: 'ACTIVE',
+        }),
+      }),
+      env
+    );
+    expect(createTankRes.status).toBe(400);
+    const json = (await createTankRes.json()) as any;
+    expect(json.error.code).toBe('UNIT_NOT_SUPPORTED_BY_LIQUID_TANK');
+    expect(json.error.message).toBe(
+      'This product is measured in KG and cannot be assigned to a liquid underground tank. CNG source/storage infrastructure is handled separately.'
+    );
+  });
+
+  // 19. Tank product cannot be changed to KG product
+  it('19. Tank product cannot be changed to KG product (HTTP 400 UNIT_NOT_SUPPORTED_BY_LIQUID_TANK)', async () => {
+    const { cookie: dealerCookie } = await loginAs('dealer.parkstreet@iocl.in');
+
+    const updateRes = await app.fetch(
+      new Request('http://localhost/api/v1/tanks/tank-ro1-1', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Cookie: dealerCookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({
+          productId: 'prod-cng',
+        }),
+      }),
+      env
+    );
+    expect(updateRes.status).toBe(400);
+    const json = (await updateRes.json()) as any;
+    expect(json.error.code).toBe('UNIT_NOT_SUPPORTED_BY_LIQUID_TANK');
+    expect(json.error.message).toBe(
+      'This product is measured in KG and cannot be assigned to a liquid underground tank. CNG source/storage infrastructure is handled separately.'
+    );
+  });
+
+  // 20. ACTIVE nozzle cannot be created against inactive tank
+  it('20. ACTIVE nozzle cannot be created against inactive tank (HTTP 400)', async () => {
+    const { cookie: dealerCookie } = await loginAs('dealer.parkstreet@iocl.in');
+    const db = getDb(localD1);
+
+    // Create an inactive tank
+    const nowIso = new Date().toISOString();
+    await db.insert(schema.tanks).values({
+      id: 'tank-ro1-inactive',
+      outletId: 'ro-1001',
+      tankNumber: 9,
+      name: 'Tank Inactive MS',
+      productId: 'prod-ms',
+      capacityLitres: 20000,
+      safeFillCapacityLitres: 19000,
+      minimumOperatingLevelLitres: 1000,
+      status: 'INACTIVE',
+      createdAt: nowIso,
+      updatedAt: nowIso,
+      createdBy: 'user-admin',
+    });
+
+    const createNozzleRes = await app.fetch(
+      new Request('http://localhost/api/v1/dispensers/disp-ro1-1/nozzles', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: dealerCookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({
+          nozzleNumber: 99,
+          productId: 'prod-ms',
+          tankId: 'tank-ro1-inactive',
+          status: 'ACTIVE',
+        }),
+      }),
+      env
+    );
+    expect(createNozzleRes.status).toBe(400);
+    const json = (await createNozzleRes.json()) as any;
+    expect(json.error.code).toBe('INACTIVE_TANK');
+  });
+
+  // 21. ACTIVE nozzle cannot be created against inactive dispenser
+  it('21. ACTIVE nozzle cannot be created against inactive dispenser (HTTP 400)', async () => {
+    const { cookie: dealerCookie } = await loginAs('dealer.parkstreet@iocl.in');
+    const db = getDb(localD1);
+
+    // Create an inactive dispenser
+    const nowIso = new Date().toISOString();
+    await db.insert(schema.dispensers).values({
+      id: 'disp-ro1-inactive',
+      outletId: 'ro-1001',
+      dispenserNumber: 9,
+      name: 'Dispenser Maintenance',
+      status: 'MAINTENANCE',
+      createdAt: nowIso,
+      updatedAt: nowIso,
+      createdBy: 'user-admin',
+    });
+
+    const createNozzleRes = await app.fetch(
+      new Request('http://localhost/api/v1/dispensers/disp-ro1-inactive/nozzles', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: dealerCookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({
+          nozzleNumber: 1,
+          productId: 'prod-ms',
+          tankId: 'tank-ro1-1',
+          status: 'ACTIVE',
+        }),
+      }),
+      env
+    );
+    expect(createNozzleRes.status).toBe(400);
+    const json = (await createNozzleRes.json()) as any;
+    expect(json.error.code).toBe('INACTIVE_DISPENSER');
+  });
+
+  // 22. ACTIVE nozzle cannot be updated to invalid tank dependency
+  it('22. ACTIVE nozzle cannot be updated to invalid tank dependency (HTTP 400)', async () => {
+    const { cookie: dealerCookie } = await loginAs('dealer.parkstreet@iocl.in');
+    const db = getDb(localD1);
+
+    // Create an inactive tank
+    const nowIso = new Date().toISOString();
+    await db.insert(schema.tanks).values({
+      id: 'tank-ro1-maint',
+      outletId: 'ro-1001',
+      tankNumber: 8,
+      name: 'Tank Maintenance',
+      productId: 'prod-ms',
+      capacityLitres: 20000,
+      safeFillCapacityLitres: 19000,
+      minimumOperatingLevelLitres: 1000,
+      status: 'MAINTENANCE',
+      createdAt: nowIso,
+      updatedAt: nowIso,
+      createdBy: 'user-admin',
+    });
+
+    // Attempt to point active nozzle nozz-ro1-1-1 to maintenance tank
+    const updateRes = await app.fetch(
+      new Request('http://localhost/api/v1/nozzles/nozz-ro1-1-1', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Cookie: dealerCookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({
+          tankId: 'tank-ro1-maint',
+        }),
+      }),
+      env
+    );
+    expect(updateRes.status).toBe(400);
+    const json = (await updateRes.json()) as any;
+    expect(json.error.code).toBe('INACTIVE_TANK');
+  });
+
+  // 23. ACTIVE tank cannot be deactivated while ACTIVE nozzles depend on it
+  it('23. ACTIVE tank cannot be deactivated while ACTIVE nozzles depend on it (HTTP 409 ACTIVE_NOZZLES_DEPEND_ON_TANK)', async () => {
+    const { cookie: dealerCookie } = await loginAs('dealer.parkstreet@iocl.in');
+
+    // Attempt to PATCH tank 1 to MAINTENANCE while nozz-ro1-1-1 & nozz-ro1-2-1 are ACTIVE
+    const deactRes = await app.fetch(
+      new Request('http://localhost/api/v1/tanks/tank-ro1-1/status', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Cookie: dealerCookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({ status: 'MAINTENANCE' }),
+      }),
+      env
+    );
+    expect(deactRes.status).toBe(409);
+    const json = (await deactRes.json()) as any;
+    expect(json.error.code).toBe('ACTIVE_NOZZLES_DEPEND_ON_TANK');
+  });
+
+  // 24. ACTIVE dispenser cannot be deactivated while ACTIVE nozzles depend on it
+  it('24. ACTIVE dispenser cannot be deactivated while ACTIVE nozzles depend on it (HTTP 409 ACTIVE_NOZZLES_DEPEND_ON_DISPENSER)', async () => {
+    const { cookie: dealerCookie } = await loginAs('dealer.parkstreet@iocl.in');
+
+    // Attempt to PATCH dispenser 1 to MAINTENANCE while nozz-ro1-1-1 & nozz-ro1-1-2 are ACTIVE
+    const deactRes = await app.fetch(
+      new Request('http://localhost/api/v1/dispensers/disp-ro1-1/status', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Cookie: dealerCookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({ status: 'MAINTENANCE' }),
+      }),
+      env
+    );
+    expect(deactRes.status).toBe(409);
+    const json = (await deactRes.json()) as any;
+    expect(json.error.code).toBe('ACTIVE_NOZZLES_DEPEND_ON_DISPENSER');
   });
 });

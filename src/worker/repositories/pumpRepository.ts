@@ -219,6 +219,14 @@ export class PumpRepository {
     return rows as Nozzle[];
   }
 
+  async findActiveNozzlesReferencingTank(tankId: string): Promise<Nozzle[]> {
+    const rows = await this.db
+      .select()
+      .from(schema.nozzles)
+      .where(and(eq(schema.nozzles.tankId, tankId), eq(schema.nozzles.status, 'ACTIVE')));
+    return rows as Nozzle[];
+  }
+
   async createTank(data: {
     id: string;
     outletId: string;
@@ -389,6 +397,14 @@ export class PumpRepository {
       tankNumber: r.tank.tankNumber,
       tankName: r.tank.name,
     }));
+  }
+
+  async findActiveNozzlesByDispenser(dispenserId: string): Promise<Nozzle[]> {
+    const rows = await this.db
+      .select()
+      .from(schema.nozzles)
+      .where(and(eq(schema.nozzles.dispenserId, dispenserId), eq(schema.nozzles.status, 'ACTIVE')));
+    return rows as Nozzle[];
   }
 
   async findNozzleById(id: string): Promise<Nozzle | null> {
@@ -607,8 +623,8 @@ export class PumpRepository {
     notes?: string | null;
     createdAt: string;
     updatedAt: string;
-  }): Promise<{ shift: OperationalShift; snapshotsCount: number }> {
-    // 1. Resolve all participating active nozzles with active dispensers
+  }): Promise<{ success: boolean; shift: OperationalShift | null; snapshotsCount: number; error?: string; message?: string }> {
+    // 1. Resolve all participating active nozzles with active dispensers, active tanks, active products, and active outlet_products mappings
     const activeParticipatingNozzles = await this.db
       .select({
         nozzle: schema.nozzles,
@@ -620,15 +636,39 @@ export class PumpRepository {
       .innerJoin(schema.dispensers, eq(schema.nozzles.dispenserId, schema.dispensers.id))
       .innerJoin(schema.products, eq(schema.nozzles.productId, schema.products.id))
       .innerJoin(schema.tanks, eq(schema.nozzles.tankId, schema.tanks.id))
+      .innerJoin(
+        schema.outletProducts,
+        and(
+          eq(schema.outletProducts.outletId, schema.nozzles.outletId),
+          eq(schema.outletProducts.productId, schema.nozzles.productId)
+        )
+      )
       .where(
         and(
           eq(schema.nozzles.outletId, data.outletId),
           eq(schema.nozzles.status, 'ACTIVE'),
-          eq(schema.dispensers.status, 'ACTIVE')
+          eq(schema.dispensers.status, 'ACTIVE'),
+          eq(schema.dispensers.outletId, data.outletId),
+          eq(schema.tanks.status, 'ACTIVE'),
+          eq(schema.tanks.outletId, data.outletId),
+          eq(schema.tanks.productId, schema.nozzles.productId),
+          eq(schema.products.status, 'ACTIVE'),
+          eq(schema.outletProducts.status, 'ACTIVE')
         )
       );
 
-    // 2. Prepare shift insert
+    // 2. Prevent empty operational shifts
+    if (activeParticipatingNozzles.length === 0) {
+      return {
+        success: false,
+        shift: null,
+        snapshotsCount: 0,
+        error: 'NO_OPERATIONAL_NOZZLES',
+        message: 'No operational active nozzles with valid active dependencies exist to open a shift.',
+      };
+    }
+
+    // 3. Prepare shift insert
     const shiftInsert = this.db.insert(schema.operationalShifts).values({
       id: data.id,
       outletId: data.outletId,
@@ -644,36 +684,32 @@ export class PumpRepository {
       updatedAt: data.updatedAt,
     });
 
-    // 3. Atomically insert shift and snapshot rows together
-    if (activeParticipatingNozzles.length > 0) {
-      const snapshotRows = activeParticipatingNozzles.map(n => ({
-        id: `osn-${crypto.randomUUID()}`,
-        operationalShiftId: data.id,
-        outletId: data.outletId,
-        nozzleId: n.nozzle.id,
-        dispenserId: n.dispenser.id,
-        dispenserNumber: n.dispenser.dispenserNumber,
-        dispenserName: n.dispenser.name,
-        nozzleNumber: n.nozzle.nozzleNumber,
-        productId: n.product.id,
-        productCode: n.product.code,
-        productName: n.product.name,
-        productCategory: n.product.category,
-        productUnit: n.product.unit as ProductUnit,
-        tankId: n.tank.id,
-        tankNumber: n.tank.tankNumber,
-        snapshotStatus: 'ACTIVE',
-        createdAt: data.createdAt,
-      }));
+    // 4. Atomically insert shift and snapshot rows together
+    const snapshotRows = activeParticipatingNozzles.map(n => ({
+      id: `osn-${crypto.randomUUID()}`,
+      operationalShiftId: data.id,
+      outletId: data.outletId,
+      nozzleId: n.nozzle.id,
+      dispenserId: n.dispenser.id,
+      dispenserNumber: n.dispenser.dispenserNumber,
+      dispenserName: n.dispenser.name,
+      nozzleNumber: n.nozzle.nozzleNumber,
+      productId: n.product.id,
+      productCode: n.product.code,
+      productName: n.product.name,
+      productCategory: n.product.category,
+      productUnit: n.product.unit as ProductUnit,
+      tankId: n.tank.id,
+      tankNumber: n.tank.tankNumber,
+      snapshotStatus: 'ACTIVE',
+      createdAt: data.createdAt,
+    }));
 
-      const snapshotInsert = this.db.insert(schema.operationalShiftNozzles).values(snapshotRows);
-      await (this.db as any).batch([shiftInsert, snapshotInsert]);
-    } else {
-      await shiftInsert;
-    }
+    const snapshotInsert = this.db.insert(schema.operationalShiftNozzles).values(snapshotRows);
+    await (this.db as any).batch([shiftInsert, snapshotInsert]);
 
     const shift = (await this.findOperationalShiftById(data.id))!;
-    return { shift, snapshotsCount: activeParticipatingNozzles.length };
+    return { success: true, shift, snapshotsCount: activeParticipatingNozzles.length };
   }
 
   async listShiftNozzleSnapshots(shiftId: string): Promise<OperationalShiftNozzleSnapshot[]> {

@@ -120,7 +120,7 @@ shifts.post('/outlets/:outletId/shifts/open', requirePermission(PERMISSIONS.SHIF
   const shiftId = `ops-${crypto.randomUUID()}`;
 
   // Open shift and capture snapshot atomically
-  const { shift: opened, snapshotsCount } = await pumpRepo.openOperationalShiftWithSnapshot({
+  const openRes = await pumpRepo.openOperationalShiftWithSnapshot({
     id: shiftId,
     outletId,
     shiftTemplateId,
@@ -131,6 +131,19 @@ shifts.post('/outlets/:outletId/shifts/open', requirePermission(PERMISSIONS.SHIF
     createdAt: nowIso,
     updatedAt: nowIso,
   });
+
+  if (!openRes.success || !openRes.shift) {
+    return c.json({
+      success: false,
+      data: null,
+      error: {
+        code: openRes.error || 'NO_OPERATIONAL_NOZZLES',
+        message: openRes.message || 'Cannot open operational shift: No active nozzles with valid active dependencies exist for this outlet.',
+      },
+    }, 409);
+  }
+
+  const { shift: opened, snapshotsCount } = openRes;
 
   await auditRepo.logAction({
     id: `aud-${crypto.randomUUID()}`,

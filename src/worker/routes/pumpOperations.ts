@@ -211,7 +211,23 @@ pumpOperations.post('/outlets/:outletId/tanks', requirePermission(PERMISSIONS.TA
 
   const payload = parseResult.data;
 
-  // Rule: product must be mapped to the same outlet
+  // Rule 1: load Product Master record and enforce liquid tank unit (LITRE only)
+  const prodMaster = await pumpRepo.findProductById(payload.productId);
+  if (!prodMaster) {
+    return c.json({ success: false, data: null, error: { code: 'NOT_FOUND', message: 'Product not found in global catalog' } }, 404);
+  }
+  if (prodMaster.unit !== 'LITRE') {
+    return c.json({
+      success: false,
+      data: null,
+      error: {
+        code: 'UNIT_NOT_SUPPORTED_BY_LIQUID_TANK',
+        message: 'This product is measured in KG and cannot be assigned to a liquid underground tank. CNG source/storage infrastructure is handled separately.',
+      },
+    }, 400);
+  }
+
+  // Rule 2: product must be mapped to the same outlet and ACTIVE
   const outletProduct = await pumpRepo.findOutletProduct(outletId, payload.productId);
   if (!outletProduct || outletProduct.status !== 'ACTIVE') {
     return c.json({
@@ -221,7 +237,7 @@ pumpOperations.post('/outlets/:outletId/tanks', requirePermission(PERMISSIONS.TA
     }, 400);
   }
 
-  // Rule: tank_number must be unique per outlet
+  // Rule 3: tank_number must be unique per outlet
   const existingTankNum = await pumpRepo.findTankByOutletAndNumber(outletId, payload.tankNumber);
   if (existingTankNum) {
     return c.json({
@@ -318,23 +334,55 @@ pumpOperations.put('/tanks/:id', requirePermission(PERMISSIONS.TANKS_WRITE) as a
     return c.json({ success: false, data: null, error: { code: 'VALIDATION_ERROR', message: 'Safe fill capacity cannot exceed total capacity' } }, 400);
   }
 
-  // Phase 2A Hardening: Do not allow changing a tank's product when existing nozzles reference the tank
-  if (payload.productId && payload.productId !== tank.productId) {
-    const referencingNozzles = await pumpRepo.findNozzlesReferencingTank(id);
-    if (referencingNozzles.length > 0) {
+  // Phase 2A Hardening: CNG/KG Protection and product change validation
+  if (payload.productId) {
+    const prodMaster = await pumpRepo.findProductById(payload.productId);
+    if (!prodMaster) {
+      return c.json({ success: false, data: null, error: { code: 'NOT_FOUND', message: 'Product not found in master catalog' } }, 404);
+    }
+    if (prodMaster.unit !== 'LITRE') {
       return c.json({
         success: false,
         data: null,
         error: {
-          code: 'TANK_IN_USE',
-          message: `Cannot change tank product because ${referencingNozzles.length} nozzle(s) currently reference this tank.`,
+          code: 'UNIT_NOT_SUPPORTED_BY_LIQUID_TANK',
+          message: 'This product is measured in KG and cannot be assigned to a liquid underground tank. CNG source/storage infrastructure is handled separately.',
         },
-      }, 409);
+      }, 400);
     }
 
-    const op = await pumpRepo.findOutletProduct(tank.outletId, payload.productId);
-    if (!op || op.status !== 'ACTIVE') {
-      return c.json({ success: false, data: null, error: { code: 'INVALID_PRODUCT', message: 'Product must be mapped and ACTIVE for this outlet' } }, 400);
+    if (payload.productId !== tank.productId) {
+      const referencingNozzles = await pumpRepo.findNozzlesReferencingTank(id);
+      if (referencingNozzles.length > 0) {
+        return c.json({
+          success: false,
+          data: null,
+          error: {
+            code: 'TANK_IN_USE',
+            message: `Cannot change tank product because ${referencingNozzles.length} nozzle(s) currently reference this tank.`,
+          },
+        }, 409);
+      }
+
+      const op = await pumpRepo.findOutletProduct(tank.outletId, payload.productId);
+      if (!op || op.status !== 'ACTIVE') {
+        return c.json({ success: false, data: null, error: { code: 'INVALID_PRODUCT', message: 'Product must be mapped and ACTIVE for this outlet' } }, 400);
+      }
+    }
+  }
+
+  // Master Status Change Safety: Prevent changing tank status away from ACTIVE if ACTIVE nozzles depend on it
+  if (payload.status && payload.status !== 'ACTIVE' && tank.status === 'ACTIVE') {
+    const activeNozzles = await pumpRepo.findActiveNozzlesReferencingTank(id);
+    if (activeNozzles.length > 0) {
+      return c.json({
+        success: false,
+        data: null,
+        error: {
+          code: 'ACTIVE_NOZZLES_DEPEND_ON_TANK',
+          message: `Cannot change tank status to ${payload.status} while ${activeNozzles.length} ACTIVE nozzle(s) depend on it. Deactivate or reassign the nozzles first.`,
+        },
+      }, 409);
     }
   }
 
@@ -383,6 +431,21 @@ pumpOperations.patch('/tanks/:id/status', requirePermission(PERMISSIONS.TANKS_WR
   const status = body?.status;
   if (!['ACTIVE', 'INACTIVE', 'MAINTENANCE', 'DECOMMISSIONED'].includes(status)) {
     return c.json({ success: false, data: null, error: { code: 'VALIDATION_ERROR', message: 'Invalid status' } }, 400);
+  }
+
+  // Master Status Change Safety: Prevent deactivating tank if ACTIVE nozzles depend on it
+  if (status !== 'ACTIVE' && tank.status === 'ACTIVE') {
+    const activeNozzles = await pumpRepo.findActiveNozzlesReferencingTank(id);
+    if (activeNozzles.length > 0) {
+      return c.json({
+        success: false,
+        data: null,
+        error: {
+          code: 'ACTIVE_NOZZLES_DEPEND_ON_TANK',
+          message: `Cannot change tank status to ${status} while ${activeNozzles.length} ACTIVE nozzle(s) depend on it. Deactivate or reassign the nozzles first.`,
+        },
+      }, 409);
+    }
   }
 
   const nowIso = new Date().toISOString();
@@ -556,6 +619,21 @@ pumpOperations.put('/dispensers/:id', requirePermission(PERMISSIONS.DISPENSERS_W
     }
   }
 
+  // Master Status Change Safety: Prevent deactivating dispenser if ACTIVE nozzles belong to it
+  if (payload.status && payload.status !== 'ACTIVE' && disp.status === 'ACTIVE') {
+    const activeNozzles = await pumpRepo.findActiveNozzlesByDispenser(id);
+    if (activeNozzles.length > 0) {
+      return c.json({
+        success: false,
+        data: null,
+        error: {
+          code: 'ACTIVE_NOZZLES_DEPEND_ON_DISPENSER',
+          message: `Cannot change dispenser status to ${payload.status} while ${activeNozzles.length} ACTIVE nozzle(s) belong to it. Deactivate the nozzles first.`,
+        },
+      }, 409);
+    }
+  }
+
   const nowIso = new Date().toISOString();
   const updated = await pumpRepo.updateDispenser(id, {
     ...payload,
@@ -601,6 +679,21 @@ pumpOperations.patch('/dispensers/:id/status', requirePermission(PERMISSIONS.DIS
   const status = body?.status;
   if (!['ACTIVE', 'INACTIVE', 'MAINTENANCE', 'DECOMMISSIONED'].includes(status)) {
     return c.json({ success: false, data: null, error: { code: 'VALIDATION_ERROR', message: 'Invalid status' } }, 400);
+  }
+
+  // Master Status Change Safety: Prevent deactivating dispenser if ACTIVE nozzles belong to it
+  if (status !== 'ACTIVE' && disp.status === 'ACTIVE') {
+    const activeNozzles = await pumpRepo.findActiveNozzlesByDispenser(id);
+    if (activeNozzles.length > 0) {
+      return c.json({
+        success: false,
+        data: null,
+        error: {
+          code: 'ACTIVE_NOZZLES_DEPEND_ON_DISPENSER',
+          message: `Cannot change dispenser status to ${status} while ${activeNozzles.length} ACTIVE nozzle(s) belong to it. Deactivate the nozzles first.`,
+        },
+      }, 409);
+    }
   }
 
   const nowIso = new Date().toISOString();
@@ -692,6 +785,7 @@ pumpOperations.post('/dispensers/:dispenserId/nozzles', requirePermission(PERMIS
 
   const payload = parseResult.data;
   const outletId = disp.outletId;
+  const targetStatus = payload.status || 'ACTIVE';
 
   // Rule: nozzle_number must be unique within a dispenser
   const existingNum = await pumpRepo.findNozzleByDispenserAndNumber(dispenserId, payload.nozzleNumber);
@@ -703,13 +797,23 @@ pumpOperations.post('/dispensers/:dispenserId/nozzles', requirePermission(PERMIS
     }, 409);
   }
 
-  // Rule: Product must be mapped to the outlet and ACTIVE
-  const outletProduct = await pumpRepo.findOutletProduct(outletId, payload.productId);
-  if (!outletProduct || outletProduct.status !== 'ACTIVE') {
+  // Rule: Product master must exist
+  const prodMaster = await pumpRepo.findProductById(payload.productId);
+  if (!prodMaster) {
     return c.json({
       success: false,
       data: null,
-      error: { code: 'INVALID_PRODUCT', message: 'Product must be mapped and ACTIVE for this outlet' },
+      error: { code: 'NOT_FOUND', message: 'Product not found in global catalog' },
+    }, 404);
+  }
+
+  // Rule: Product must be mapped to the outlet
+  const outletProduct = await pumpRepo.findOutletProduct(outletId, payload.productId);
+  if (!outletProduct) {
+    return c.json({
+      success: false,
+      data: null,
+      error: { code: 'INVALID_PRODUCT', message: 'Product must be mapped to this retail outlet' },
     }, 400);
   }
 
@@ -733,6 +837,38 @@ pumpOperations.post('/dispensers/:dispenserId/nozzles', requirePermission(PERMIS
         message: `Tank product does not match nozzle product`,
       },
     }, 400);
+  }
+
+  // Rule: When creating an ACTIVE nozzle, all dependencies must be ACTIVE
+  if (targetStatus === 'ACTIVE') {
+    if (disp.status !== 'ACTIVE') {
+      return c.json({
+        success: false,
+        data: null,
+        error: { code: 'INACTIVE_DISPENSER', message: `Cannot create an ACTIVE nozzle on dispenser #${disp.dispenserNumber} because it is ${disp.status}` },
+      }, 400);
+    }
+    if (tank.status !== 'ACTIVE') {
+      return c.json({
+        success: false,
+        data: null,
+        error: { code: 'INACTIVE_TANK', message: `Cannot create an ACTIVE nozzle for tank #${tank.tankNumber} because it is ${tank.status}` },
+      }, 400);
+    }
+    if (prodMaster.status !== 'ACTIVE') {
+      return c.json({
+        success: false,
+        data: null,
+        error: { code: 'INACTIVE_PRODUCT', message: `Cannot create an ACTIVE nozzle because product '${prodMaster.code}' is ${prodMaster.status}` },
+      }, 400);
+    }
+    if (outletProduct.status !== 'ACTIVE') {
+      return c.json({
+        success: false,
+        data: null,
+        error: { code: 'INACTIVE_PRODUCT', message: `Cannot create an ACTIVE nozzle because product mapping is ${outletProduct.status}` },
+      }, 400);
+    }
   }
 
   const nowIso = new Date().toISOString();
@@ -813,12 +949,7 @@ pumpOperations.put('/nozzles/:id', requirePermission(PERMISSIONS.NOZZLES_WRITE) 
   const payload = parseResult.data;
   const targetTankId = payload.tankId || nozzle.tankId;
   const targetProductId = payload.productId || nozzle.productId;
-
-  // Validate product is active for outlet
-  const outletProd = await pumpRepo.findOutletProduct(nozzle.outletId, targetProductId);
-  if (!outletProd || outletProd.status !== 'ACTIVE') {
-    return c.json({ success: false, data: null, error: { code: 'INVALID_PRODUCT', message: 'Product must be mapped and ACTIVE for this outlet' } }, 400);
-  }
+  const targetStatus = payload.status || nozzle.status;
 
   const tank = await pumpRepo.findTankById(targetTankId);
   if (!tank || tank.outletId !== nozzle.outletId) {
@@ -827,6 +958,33 @@ pumpOperations.put('/nozzles/:id', requirePermission(PERMISSIONS.NOZZLES_WRITE) 
 
   if (tank.productId !== targetProductId) {
     return c.json({ success: false, data: null, error: { code: 'PRODUCT_MISMATCH', message: 'Tank product must match nozzle product' } }, 400);
+  }
+
+  const prodMaster = await pumpRepo.findProductById(targetProductId);
+  if (!prodMaster) {
+    return c.json({ success: false, data: null, error: { code: 'NOT_FOUND', message: 'Product not found in global catalog' } }, 404);
+  }
+
+  const outletProd = await pumpRepo.findOutletProduct(nozzle.outletId, targetProductId);
+  if (!outletProd) {
+    return c.json({ success: false, data: null, error: { code: 'INVALID_PRODUCT', message: 'Product is not mapped for this outlet' } }, 400);
+  }
+
+  // Active Nozzle Dependency Safety: if target status is ACTIVE, verify all dependencies are ACTIVE
+  if (targetStatus === 'ACTIVE') {
+    const disp = await pumpRepo.findDispenserById(nozzle.dispenserId);
+    if (!disp || disp.status !== 'ACTIVE') {
+      return c.json({ success: false, data: null, error: { code: 'INACTIVE_DISPENSER', message: `Cannot set nozzle to ACTIVE because dispenser #${disp?.dispenserNumber} is ${disp?.status}` } }, 400);
+    }
+    if (tank.status !== 'ACTIVE') {
+      return c.json({ success: false, data: null, error: { code: 'INACTIVE_TANK', message: `Cannot set nozzle to ACTIVE because tank #${tank.tankNumber} is ${tank.status}` } }, 400);
+    }
+    if (prodMaster.status !== 'ACTIVE') {
+      return c.json({ success: false, data: null, error: { code: 'INACTIVE_PRODUCT', message: `Cannot set nozzle to ACTIVE because product '${prodMaster.code}' is ${prodMaster.status}` } }, 400);
+    }
+    if (outletProd.status !== 'ACTIVE') {
+      return c.json({ success: false, data: null, error: { code: 'INACTIVE_PRODUCT', message: `Cannot set nozzle to ACTIVE because outlet product mapping is ${outletProd.status}` } }, 400);
+    }
   }
 
   const nowIso = new Date().toISOString();
@@ -874,6 +1032,32 @@ pumpOperations.patch('/nozzles/:id/status', requirePermission(PERMISSIONS.NOZZLE
   const status = body?.status;
   if (!['ACTIVE', 'INACTIVE', 'MAINTENANCE', 'DECOMMISSIONED'].includes(status)) {
     return c.json({ success: false, data: null, error: { code: 'VALIDATION_ERROR', message: 'Invalid status' } }, 400);
+  }
+
+  // Active Nozzle Dependency Safety: if activating, verify all dependencies are ACTIVE
+  if (status === 'ACTIVE') {
+    const disp = await pumpRepo.findDispenserById(nozzle.dispenserId);
+    if (!disp || disp.status !== 'ACTIVE') {
+      return c.json({ success: false, data: null, error: { code: 'INACTIVE_DISPENSER', message: `Cannot activate nozzle because dispenser #${disp?.dispenserNumber} is ${disp?.status}` } }, 400);
+    }
+    const tank = await pumpRepo.findTankById(nozzle.tankId);
+    if (!tank || tank.status !== 'ACTIVE') {
+      return c.json({ success: false, data: null, error: { code: 'INACTIVE_TANK', message: `Cannot activate nozzle because tank #${tank?.tankNumber} is ${tank?.status}` } }, 400);
+    }
+    if (tank.outletId !== nozzle.outletId) {
+      return c.json({ success: false, data: null, error: { code: 'INVALID_TANK', message: 'Tank belongs to another outlet' } }, 400);
+    }
+    if (tank.productId !== nozzle.productId) {
+      return c.json({ success: false, data: null, error: { code: 'PRODUCT_MISMATCH', message: 'Tank product must match nozzle product' } }, 400);
+    }
+    const prodMaster = await pumpRepo.findProductById(nozzle.productId);
+    if (!prodMaster || prodMaster.status !== 'ACTIVE') {
+      return c.json({ success: false, data: null, error: { code: 'INACTIVE_PRODUCT', message: `Cannot activate nozzle because product '${prodMaster?.code}' is ${prodMaster?.status}` } }, 400);
+    }
+    const outletProd = await pumpRepo.findOutletProduct(nozzle.outletId, nozzle.productId);
+    if (!outletProd || outletProd.status !== 'ACTIVE') {
+      return c.json({ success: false, data: null, error: { code: 'INACTIVE_PRODUCT', message: `Cannot activate nozzle because outlet product mapping is ${outletProd?.status}` } }, 400);
+    }
   }
 
   const nowIso = new Date().toISOString();
