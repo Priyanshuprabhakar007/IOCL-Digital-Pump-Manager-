@@ -521,6 +521,22 @@ export interface ProductPrice {
   effectiveFrom: string;
   effectiveTo?: string | null;
   status: "ACTIVE" | "INACTIVE";
+  createdAt: string;
+  createdBy: string;
+}
+
+export interface OperationalShiftProductPrice {
+  id: string;
+  operationalShiftId: string;
+  outletId: string;
+  productId: string;
+  productCode: string;
+  productName: string;
+  unit: string;
+  pricePaisePerUnit: number;
+  pricePerUnitStr?: string;
+  sourcePriceId: string;
+  createdAt: string;
 }
 
 export interface CreditParty {
@@ -528,7 +544,12 @@ export interface CreditParty {
   outletId: string;
   partyCode: string;
   partyName: string;
+  contactName?: string | null;
+  phone?: string | null;
   status: "ACTIVE" | "INACTIVE";
+  createdAt: string;
+  updatedAt: string;
+  createdBy: string;
 }
 
 export type CollectionType = "CASH" | "POS_CARD" | "UPI" | "FLEET_CARD" | "CREDIT_SALE" | "DIRECT_BANK_DROP";
@@ -539,13 +560,17 @@ export interface ShiftCollection {
   outletId: string;
   collectionType: CollectionType;
   amountPaise: number;
+  amountStr?: string;
   provider?: string | null;
   referenceNumber?: string | null;
   creditPartyId?: string | null;
-  collectedAt: string;
-  recordedByUserId: string;
   creditPartyCodeSnapshot?: string | null;
   creditPartyNameSnapshot?: string | null;
+  collectedAt: string;
+  recordedByUserId: string;
+  notes?: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface CashHandover {
@@ -553,7 +578,15 @@ export interface CashHandover {
   operationalShiftId: string;
   outletId: string;
   amountPaise: number;
+  amountStr?: string;
+  handedOverByUserId: string;
+  receivedByUserId?: string | null;
+  handedOverAt: string;
+  receivedAt?: string | null;
   status: "PENDING" | "ACKNOWLEDGED" | "DISPUTED";
+  notes?: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface BankDeposit {
@@ -562,7 +595,126 @@ export interface BankDeposit {
   operationalShiftId: string;
   depositChannel: "BANK_BRANCH" | "CASH_DROP_BOX";
   amountPaise: number;
+  amountStr?: string;
+  depositDate: string;
+  referenceNumber?: string | null;
+  documentId?: string | null;
   status: "SUBMITTED" | "VERIFIED" | "REJECTED";
+  recordedByUserId: string;
+  verifiedByUserId?: string | null;
+  verifiedAt?: string | null;
+  rejectionReason?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type FinancialVarianceStatus = 'BALANCED' | 'SHORTAGE' | 'EXCESS';
+
+export interface ShiftFinancialReconciliation {
+  id: string;
+  operationalShiftId: string;
+  outletId: string;
+  fuelSalesRevenuePaise: number;
+  cngSalesRevenuePaise?: number | null;
+  lubeSalesRevenuePaise?: number | null;
+  authoritativeSalesRevenuePaise: number;
+  cashCollectionPaise: number;
+  posCollectionPaise: number;
+  upiCollectionPaise: number;
+  fleetCardCollectionPaise: number;
+  creditSalesPaise: number;
+  directBankDropPaise: number;
+  totalCollectionsPaise: number;
+  salesCollectionVariancePaise: number;
+  varianceStatus: FinancialVarianceStatus;
+  varianceReason?: string | null;
+  calculatedAt: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface FinancialRevenueProduct {
+  productId: string;
+  productCode: string;
+  productName: string;
+  unit: string;
+  quantityMilliunits: number;
+  quantityStr: string;
+  pricePaisePerUnit: number;
+  pricePerUnitStr: string;
+  revenuePaise: number;
+  revenueStr: string;
+}
+
+export interface CashDepositControl {
+  cashCollectedPaise: number;
+  cashCollectedStr: string;
+  verifiedCashDepositedPaise: number;
+  verifiedCashDepositedStr: string;
+  pendingCashDepositPaise: number;
+  pendingCashDepositStr: string;
+}
+
+export interface CreditSalesPartySummary {
+  creditPartyId: string;
+  partyCode: string;
+  partyName: string;
+  amountPaise: number;
+  amountStr: string;
+}
+
+export interface ShiftFinancialSummary {
+  operationalShiftId: string;
+  outletId: string;
+  salesRevenue: {
+    byProduct: FinancialRevenueProduct[];
+    fuelTotalPaise: number;
+    fuelTotalStr: string;
+    cngTotalPaise: number | null;
+    cngTotalStr: string | null;
+    lubeTotalPaise: number | null;
+    lubeTotalStr: string | null;
+    includedComponents: string[];
+    pendingComponents: string[];
+    authoritativeTotalPaise: number;
+    authoritativeTotalStr: string;
+  };
+  collections: {
+    cashPaise: number;
+    cashStr: string;
+    posCardPaise: number;
+    posCardStr: string;
+    upiPaise: number;
+    upiStr: string;
+    fleetCardPaise: number;
+    fleetCardStr: string;
+    creditSalesPaise: number;
+    creditSalesStr: string;
+    directBankDropPaise: number;
+    directBankDropStr: string;
+    totalPaise: number;
+    totalStr: string;
+  };
+  creditSalesByParty: CreditSalesPartySummary[];
+  variancePaise: number;
+  varianceStr: string;
+  varianceStatus: FinancialVarianceStatus | null;
+  varianceReason: string | null;
+  cashHandoverSummary: {
+    totalPendingPaise: number;
+    totalPendingStr: string;
+    totalAcknowledgedPaise: number;
+    totalAcknowledgedStr: string;
+  };
+  bankDepositSummary: {
+    totalSubmittedPaise: number;
+    totalSubmittedStr: string;
+    totalVerifiedPaise: number;
+    totalVerifiedStr: string;
+    totalRejectedPaise: number;
+    totalRejectedStr: string;
+  };
+  cashDepositControl: CashDepositControl;
 }
 
 export interface FuelReceipt {

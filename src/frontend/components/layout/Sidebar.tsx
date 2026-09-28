@@ -16,6 +16,7 @@ import {
   Gauge,
   Clock,
   Droplets,
+  Banknote,
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -69,6 +70,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
       label: 'Stock & Decantation',
       icon: Droplets,
       perm: PERMISSIONS.TANK_STOCK_READ,
+    },
+    {
+      id: 'financials',
+      label: 'Financials',
+      icon: Banknote,
+      perm: PERMISSIONS.FINANCIAL_RECONCILIATION_READ,
     },
     {
       id: 'users',

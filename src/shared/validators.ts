@@ -414,6 +414,66 @@ export const FuelReceiptStatusUpdateSchema = z.object({
   sealExceptionReason: z.string().optional().nullable(),
 });
 
+import { parseMoneyToPaise } from './financialUtils';
+
+export const MoneyStringSchema = z.string().refine((val) => {
+  try {
+    parseMoneyToPaise(val);
+    return true;
+  } catch {
+    return false;
+  }
+}, { message: "Invalid positive decimal money format (at most 2 decimal places)" });
+
+export const ProductPriceSchema = z.object({
+  productId: z.string().min(1, "Product ID required"),
+  pricePaisePerUnit: MoneyStringSchema,
+  effectiveFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Date must be YYYY-MM-DD'),
+  effectiveTo: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Date must be YYYY-MM-DD').optional().nullable(),
+});
+
+export const CreditPartySchema = z.object({
+  partyCode: z.string().trim().min(1, "Party code required"),
+  partyName: z.string().trim().min(1, "Party name required"),
+  contactName: z.string().trim().optional().nullable(),
+  phone: z.string().trim().optional().nullable(),
+  status: z.enum(["ACTIVE", "INACTIVE"]).default("ACTIVE"),
+});
+
+export const ShiftCollectionSchema = z.object({
+  collectionType: z.enum(["CASH", "POS_CARD", "UPI", "FLEET_CARD", "CREDIT_SALE", "DIRECT_BANK_DROP"]),
+  amount: MoneyStringSchema,
+  provider: z.string().trim().optional().nullable(),
+  referenceNumber: z.string().trim().optional().nullable(),
+  creditPartyId: z.string().trim().optional().nullable(),
+  collectedAt: z.string().min(1, "Collection time required"),
+  notes: z.string().trim().optional().nullable(),
+}).refine(data => {
+  if (data.collectionType === 'CREDIT_SALE' && !data.creditPartyId) return false;
+  return true;
+}, {
+  message: 'Credit party is required for credit sales',
+  path: ['creditPartyId']
+});
+
+export const CashHandoverSchema = z.object({
+  amount: MoneyStringSchema,
+  handedOverAt: z.string().min(1, "Handover time required"),
+  notes: z.string().trim().optional().nullable(),
+});
+
+export const BankDepositSchema = z.object({
+  depositChannel: z.enum(["BANK_BRANCH", "CASH_DROP_BOX"]),
+  amount: MoneyStringSchema,
+  depositDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Date must be YYYY-MM-DD'),
+  referenceNumber: z.string().trim().optional().nullable(),
+  documentId: z.string().trim().optional().nullable(),
+});
+
+export const FinancialVarianceReasonSchema = z.object({
+  varianceReason: z.string().trim().min(3, "Reason must be at least 3 characters"),
+});
+
 export const QualityToleranceSchema = z.object({
   scopeType: z.enum(['GLOBAL', 'STATE', 'DIVISION', 'OUTLET']),
   scopeEntityId: z.string().optional().nullable(),

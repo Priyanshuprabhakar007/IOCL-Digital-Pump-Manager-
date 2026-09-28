@@ -1,5 +1,4 @@
-// @ts-ignore
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { app } from '../src/worker/app';
 import { createLocalD1Database } from '../src/db/localD1';
 import { getDb } from '../src/db';

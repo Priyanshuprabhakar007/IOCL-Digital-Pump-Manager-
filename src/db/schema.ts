@@ -528,8 +528,10 @@ export const outletProductPrices = sqliteTable('outlet_product_prices', {
   effectiveTo: text('effective_to'),
   status: text('status', { enum: ['ACTIVE', 'INACTIVE'] }).notNull().default('ACTIVE'),
   createdAt: text('created_at').notNull(),
-  createdBy: text('created_by').notNull(),
-});
+  createdBy: text('created_by').notNull().references(() => users.id),
+}, (table) => [
+  index('idx_opp_outlet_product').on(table.outletId, table.productId),
+]);
 
 export const operationalShiftProductPrices = sqliteTable('operational_shift_product_prices', {
   id: text('id').primaryKey(),
@@ -540,10 +542,11 @@ export const operationalShiftProductPrices = sqliteTable('operational_shift_prod
   productName: text('product_name').notNull(),
   unit: text('unit').notNull(),
   pricePaisePerUnit: integer('price_paise_per_unit').notNull(),
-  sourcePriceId: text('source_price_id').notNull(),
+  sourcePriceId: text('source_price_id').notNull().references(() => outletProductPrices.id),
   createdAt: text('created_at').notNull(),
 }, (table) => [
   uniqueIndex('idx_shift_product_price').on(table.operationalShiftId, table.productId),
+  index('idx_ospp_shift').on(table.operationalShiftId),
 ]);
 
 export const creditParties = sqliteTable('credit_parties', {
@@ -556,9 +559,10 @@ export const creditParties = sqliteTable('credit_parties', {
   status: text('status', { enum: ['ACTIVE', 'INACTIVE'] }).notNull().default('ACTIVE'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
-  createdBy: text('created_by').notNull(),
+  createdBy: text('created_by').notNull().references(() => users.id),
 }, (table) => [
   uniqueIndex('idx_outlet_party_code').on(table.outletId, table.partyCode),
+  index('idx_cp_outlet_status').on(table.outletId, table.status),
 ]);
 
 export const shiftCollections = sqliteTable('shift_collections', {
@@ -570,27 +574,33 @@ export const shiftCollections = sqliteTable('shift_collections', {
   provider: text('provider'),
   referenceNumber: text('reference_number'),
   creditPartyId: text('credit_party_id').references(() => creditParties.id),
+  creditPartyCodeSnapshot: text('credit_party_code_snapshot'),
+  creditPartyNameSnapshot: text('credit_party_name_snapshot'),
   collectedAt: text('collected_at').notNull(),
-  recordedByUserId: text('recorded_by_user_id').notNull(),
+  recordedByUserId: text('recorded_by_user_id').notNull().references(() => users.id),
   notes: text('notes'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
-});
+}, (table) => [
+  index('idx_sc_shift_outlet').on(table.operationalShiftId, table.outletId),
+]);
 
 export const cashHandoverLogs = sqliteTable('cash_handover_logs', {
   id: text('id').primaryKey(),
   operationalShiftId: text('operational_shift_id').notNull().references(() => operationalShifts.id),
   outletId: text('outlet_id').notNull().references(() => retailOutlets.id),
   amountPaise: integer('amount_paise').notNull(),
-  handedOverByUserId: text('handed_over_by_user_id').notNull(),
-  receivedByUserId: text('received_by_user_id'),
+  handedOverByUserId: text('handed_over_by_user_id').notNull().references(() => users.id),
+  receivedByUserId: text('received_by_user_id').references(() => users.id),
   handedOverAt: text('handed_over_at').notNull(),
   receivedAt: text('received_at'),
   status: text('status', { enum: ['PENDING', 'ACKNOWLEDGED', 'DISPUTED'] }).notNull().default('PENDING'),
   notes: text('notes'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
-});
+}, (table) => [
+  index('idx_chl_shift_outlet').on(table.operationalShiftId, table.outletId),
+]);
 
 export const bankDeposits = sqliteTable('bank_deposits', {
   id: text('id').primaryKey(),
@@ -600,15 +610,17 @@ export const bankDeposits = sqliteTable('bank_deposits', {
   amountPaise: integer('amount_paise').notNull(),
   depositDate: text('deposit_date').notNull(),
   referenceNumber: text('reference_number'),
-  documentId: text('document_id'),
+  documentId: text('document_id').references(() => documents.id),
   status: text('status', { enum: ['SUBMITTED', 'VERIFIED', 'REJECTED'] }).notNull().default('SUBMITTED'),
-  recordedByUserId: text('recorded_by_user_id').notNull(),
-  verifiedByUserId: text('verified_by_user_id'),
+  recordedByUserId: text('recorded_by_user_id').notNull().references(() => users.id),
+  verifiedByUserId: text('verified_by_user_id').references(() => users.id),
   verifiedAt: text('verified_at'),
   rejectionReason: text('rejection_reason'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
-});
+}, (table) => [
+  index('idx_bd_shift_outlet_status').on(table.operationalShiftId, table.outletId, table.status),
+]);
 
 export const shiftFinancialReconciliations = sqliteTable('shift_financial_reconciliations', {
   id: text('id').primaryKey(),

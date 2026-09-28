@@ -570,4 +570,26 @@ export async function seedDatabase(db: AppDatabase) {
     userAgent: 'D1 Seeder Engine',
     createdAt: now,
   });
+
+  // 19. Outlet Product Prices (Phase 2C - Required for shift opening)
+  const priceData = [];
+  const allOutlets = ['ro-1001', 'ro-1002', 'ro-1003'];
+  const allProds = ['prod-ms', 'prod-hsd', 'prod-xp95', 'prod-xtragreen', 'prod-cng'];
+  
+  let pIdx = 1;
+  for (const oId of allOutlets) {
+    for (const pId of allProds) {
+      priceData.push({
+        id: `opp-seed-${pIdx++}`,
+        outletId: oId,
+        productId: pId,
+        pricePaisePerUnit: 9500 + (pIdx * 10),
+        effectiveFrom: '1900-01-01',
+        status: 'ACTIVE' as const,
+        createdAt: now,
+        createdBy: 'user-admin',
+      });
+    }
+  }
+  await db.insert(schema.outletProductPrices).values(priceData).onConflictDoNothing();
 }

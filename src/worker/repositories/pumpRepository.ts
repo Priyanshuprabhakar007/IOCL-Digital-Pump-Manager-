@@ -1,6 +1,6 @@
 import { AppDatabase } from '../../db';
 import * as schema from '../../db/schema';
-import { eq, and, desc, asc, sql, ne, inArray } from 'drizzle-orm';
+import { eq, and, desc, asc, sql, ne, inArray, lte } from 'drizzle-orm';
 import {
   Product,
   OutletProduct,
@@ -705,6 +705,39 @@ export class PumpRepository {
         )
       );
 
+    // 1c. Resolve applicable product prices for products in the nozzle snapshot
+    const productIds = Array.from(new Set(activeParticipatingNozzles.map(n => n.product.id)));
+    const prices = await this.db
+      .select()
+      .from(schema.outletProductPrices)
+      .where(
+        and(
+          eq(schema.outletProductPrices.outletId, data.outletId),
+          inArray(schema.outletProductPrices.productId, productIds),
+          eq(schema.outletProductPrices.status, 'ACTIVE'),
+          lte(schema.outletProductPrices.effectiveFrom, data.businessDate),
+          sql`(${schema.outletProductPrices.effectiveTo} IS NULL OR ${schema.outletProductPrices.effectiveTo} >= ${data.businessDate})`
+        )
+      )
+      .orderBy(desc(schema.outletProductPrices.effectiveFrom));
+
+    const resolvedPrices = new Map<string, typeof prices[0]>();
+    prices.forEach(p => {
+      if (!resolvedPrices.has(p.productId)) {
+        resolvedPrices.set(p.productId, p);
+      }
+    });
+
+    if (resolvedPrices.size < productIds.length) {
+      return {
+        success: false,
+        shift: null,
+        snapshotsCount: 0,
+        error: 'PRODUCT_PRICE_NOT_CONFIGURED',
+        message: 'One or more products in this shift do not have a configured active price for the business date.',
+      };
+    }
+
     // 2. Prevent empty operational shifts
     if (activeParticipatingNozzles.length === 0) {
       return {
@@ -769,13 +802,31 @@ export class PumpRepository {
       createdAt: data.createdAt,
     }));
 
+    const priceSnapshotRows = activeParticipatingNozzles.map(n => {
+      const p = resolvedPrices.get(n.product.id)!;
+      return {
+        id: `ospp-${crypto.randomUUID()}`,
+        operationalShiftId: data.id,
+        outletId: data.outletId,
+        productId: n.product.id,
+        productCode: n.product.code,
+        productName: n.product.name,
+        unit: n.product.unit,
+        pricePaisePerUnit: p.pricePaisePerUnit,
+        sourcePriceId: p.id,
+        createdAt: data.createdAt,
+      };
+    }).filter((v, i, a) => a.findIndex(t => t.productId === v.productId) === i);
+
     const nozzleSnapshotInsert = this.db.insert(schema.operationalShiftNozzles).values(snapshotRows);
+    const priceSnapshotInsert = this.db.insert(schema.operationalShiftProductPrices).values(priceSnapshotRows);
+    
+    const batch: any[] = [shiftInsert, nozzleSnapshotInsert, priceSnapshotInsert];
     if (tankSnapshotRows.length > 0) {
-      const tankSnapshotInsert = this.db.insert(schema.operationalShiftTanks).values(tankSnapshotRows);
-      await (this.db as any).batch([shiftInsert, nozzleSnapshotInsert, tankSnapshotInsert]);
-    } else {
-      await (this.db as any).batch([shiftInsert, nozzleSnapshotInsert]);
+      batch.push(this.db.insert(schema.operationalShiftTanks).values(tankSnapshotRows));
     }
+
+    await (this.db as any).batch(batch);
 
     const shift = (await this.findOperationalShiftById(data.id))!;
     return { success: true, shift, snapshotsCount: activeParticipatingNozzles.length };
@@ -2004,7 +2055,7 @@ export class PumpRepository {
         eq(schema.operationalShifts.id, receiptData.operationalShiftId),
         eq(schema.operationalShifts.status, 'OPEN')
       ))
-    );
+    ).returning({ id: schema.fuelReceipts.id });
 
     const lineInserts = linesData.map(line =>
       this.db.insert(schema.fuelReceiptTankLines).values({
@@ -2022,7 +2073,7 @@ export class PumpRepository {
         appliedDensityToleranceMilliunits: line.appliedDensityToleranceMilliunits || null,
         createdAt: line.createdAt,
         updatedAt: line.updatedAt,
-      })
+      }).returning({ id: schema.fuelReceiptTankLines.id })
     );
 
     try {

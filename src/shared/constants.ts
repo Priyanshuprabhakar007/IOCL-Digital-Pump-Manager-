@@ -82,6 +82,21 @@ export const PERMISSIONS = {
   QUALITY_WRITE: 'quality.write',
   QUALITY_TOLERANCE_MANAGE: 'quality_tolerance.manage',
   STOCK_RECONCILIATION_READ: 'stock_reconciliation.read',
+
+  // Phase 2C: Financial Reconciliation
+  PRODUCT_PRICES_READ: 'product_prices.read',
+  PRODUCT_PRICES_WRITE: 'product_prices.write',
+  CREDIT_PARTIES_READ: 'credit_parties.read',
+  CREDIT_PARTIES_WRITE: 'credit_parties.write',
+  COLLECTIONS_READ: 'collections.read',
+  COLLECTIONS_WRITE: 'collections.write',
+  CASH_HANDOVER_READ: 'cash_handover.read',
+  CASH_HANDOVER_WRITE: 'cash_handover.write',
+  CASH_HANDOVER_ACKNOWLEDGE: 'cash_handover.acknowledge',
+  BANK_DEPOSITS_READ: 'bank_deposits.read',
+  BANK_DEPOSITS_WRITE: 'bank_deposits.write',
+  BANK_DEPOSITS_VERIFY: 'bank_deposits.verify',
+  FINANCIAL_RECONCILIATION_READ: 'financial_reconciliation.read',
 } as const;
 
 export type PermissionCode = typeof PERMISSIONS[keyof typeof PERMISSIONS];

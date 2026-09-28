@@ -13,6 +13,8 @@ import {
 } from '../../shared/validators';
 import { PERMISSIONS } from '../../shared/constants';
 import { parseMilliunits, formatMilliunits } from '../../shared/precision';
+import { FinancialRepository } from '../repositories/financialRepository';
+import { FinancialService } from '../services/financialService';
 
 export const shifts = new Hono<{ Bindings: EnvBindings }>();
 
@@ -250,6 +252,32 @@ shifts.post('/shifts/:shiftId/close', requirePermission(PERMISSIONS.SHIFTS_CLOSE
         },
       },
     }, 400);
+  }
+
+  // 3. Financial Reconciliation
+  const financialRepo = new FinancialRepository(db);
+  const financialService = new FinancialService(financialRepo, pumpRepo);
+  const body = await c.req.json().catch(() => ({}));
+  const varianceReason = body.varianceReason;
+
+  try {
+    await financialService.performFinancialReconciliation(shiftId, varianceReason);
+  } catch (err: any) {
+    if (err.message === 'VARIANCE_REASON_REQUIRED') {
+      return c.json({
+        success: false,
+        data: null,
+        error: { code: 'VARIANCE_REASON_REQUIRED', message: 'Non-zero variance requires a reason' },
+      }, 400);
+    }
+    if (err.message === 'FINANCIAL_PRICE_SNAPSHOT_UNAVAILABLE') {
+      return c.json({
+        success: false,
+        data: null,
+        error: { code: 'PRICE_SNAPSHOT_MISSING', message: 'Historical price snapshot unavailable' },
+      }, 400);
+    }
+    throw err;
   }
 
   // Concurrent immutability safe conditional close

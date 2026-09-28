@@ -20,7 +20,16 @@ interface SqliteDb {
 }
 
 export class LocalD1PreparedStatement {
-  constructor(private db: SqliteDb, private sql: string, private params: any[] = []) {}
+  private params: any[];
+
+  constructor(private db: SqliteDb, private sql: string, params: any[] = []) {
+    this.params = params.map(val => {
+      if (val === undefined) return null;
+      if (typeof val === 'boolean') return val ? 1 : 0;
+      if (val instanceof Date) return val.toISOString();
+      return val;
+    });
+  }
 
   bind(...values: any[]): D1PreparedStatement {
     return new LocalD1PreparedStatement(this.db, this.sql, values) as unknown as D1PreparedStatement;
@@ -66,7 +75,34 @@ export class LocalD1PreparedStatement {
 
   async all<T = Record<string, unknown>>(): Promise<D1Result<T>> {
     const stmt = this.getStatement();
-    const results = stmt.all(...this.params) as T[];
+    let results: T[] = [];
+    try {
+      // Better-sqlite3 throws if .all() is called on a non-row-returning statement
+      results = stmt.all(...this.params) as T[];
+    } catch (err: any) {
+      // Fallback to .run() for non-row-returning statements (INSERT, UPDATE, DELETE)
+      try {
+        const info = stmt.run(...this.params);
+        return {
+          results: [],
+          success: true,
+          meta: {
+            duration: 1,
+            changes: info.changes,
+            last_row_id: Number(info.lastInsertRowid),
+            served_by: 'local-sqlite',
+            queries_executed: 1,
+            size_after: 0,
+            rows_read: 0,
+            rows_written: info.changes,
+            changed_db: true,
+          },
+        };
+      } catch (runErr) {
+        // If run also fails, throw the run error as it's likely more relevant (e.g. constraint violation)
+        throw runErr;
+      }
+    }
     return {
       results,
       success: true,
