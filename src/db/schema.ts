@@ -371,3 +371,146 @@ export const nozzleUnavailabilityRecords = sqliteTable('nozzle_unavailability_re
   index('idx_nur_shift_id').on(table.operationalShiftId),
   index('idx_nur_nozzle_id').on(table.nozzleId),
 ]);
+
+// ==========================================
+// Phase 2B: Tank Stock, Calibration, Fuel Receipt & Reconciliation
+// ==========================================
+
+export const tankCalibrationPoints = sqliteTable('tank_calibration_points', {
+  id: text('id').primaryKey(),
+  tankId: text('tank_id').notNull().references(() => tanks.id, { onDelete: 'cascade' }),
+  dipMillimetresMilliunits: integer('dip_millimetres_milliunits').notNull(),
+  volumeMilliunits: integer('volume_milliunits').notNull(),
+  createdAt: text('created_at').notNull(),
+  createdBy: text('created_by').notNull().references(() => users.id),
+}, (table) => [
+  uniqueIndex('idx_tcp_tank_dip').on(table.tankId, table.dipMillimetresMilliunits),
+  index('idx_tcp_tank_id').on(table.tankId),
+]);
+
+export const operationalShiftTanks = sqliteTable('operational_shift_tanks', {
+  id: text('id').primaryKey(),
+  operationalShiftId: text('operational_shift_id').notNull().references(() => operationalShifts.id, { onDelete: 'cascade' }),
+  outletId: text('outlet_id').notNull().references(() => retailOutlets.id, { onDelete: 'cascade' }),
+  tankId: text('tank_id').notNull().references(() => tanks.id),
+  tankNumber: integer('tank_number').notNull(),
+  tankName: text('tank_name').notNull(),
+  productId: text('product_id').notNull().references(() => products.id),
+  productCode: text('product_code').notNull(),
+  productName: text('product_name').notNull(),
+  productUnit: text('product_unit').notNull().default('LITRE'),
+  capacityMilliunits: integer('capacity_milliunits').notNull(),
+  safeFillCapacityMilliunits: integer('safe_fill_capacity_milliunits').notNull(),
+  createdAt: text('created_at').notNull(),
+}, (table) => [
+  uniqueIndex('idx_ost_shift_tank').on(table.operationalShiftId, table.tankId),
+  index('idx_ost_shift_id').on(table.operationalShiftId),
+  index('idx_ost_outlet_id').on(table.outletId),
+]);
+
+export const tankStockReadings = sqliteTable('tank_stock_readings', {
+  id: text('id').primaryKey(),
+  operationalShiftId: text('operational_shift_id').notNull().references(() => operationalShifts.id, { onDelete: 'cascade' }),
+  outletId: text('outlet_id').notNull().references(() => retailOutlets.id, { onDelete: 'cascade' }),
+  tankId: text('tank_id').notNull().references(() => tanks.id),
+  productId: text('product_id').notNull().references(() => products.id),
+  readingType: text('reading_type', { enum: ['OPENING', 'CLOSING', 'PRE_RECEIPT', 'POST_RECEIPT', 'ADHOC'] }).notNull(),
+  source: text('source', { enum: ['MANUAL', 'ATG'] }).notNull(),
+  productDipMmMilliunits: integer('product_dip_mm_milliunits').notNull(),
+  waterDipMmMilliunits: integer('water_dip_mm_milliunits').notNull().default(0),
+  grossObservedVolumeMilliunits: integer('gross_observed_volume_milliunits').notNull(),
+  waterVolumeMilliunits: integer('water_volume_milliunits').notNull().default(0),
+  netProductVolumeMilliunits: integer('net_product_volume_milliunits').notNull(),
+  recordedAt: text('recorded_at').notNull(),
+  recordedByUserId: text('recorded_by_user_id').notNull().references(() => users.id),
+  notes: text('notes'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+}, (table) => [
+  uniqueIndex('idx_tsr_single_opening').on(table.operationalShiftId, table.tankId).where(sql`reading_type = 'OPENING'`),
+  uniqueIndex('idx_tsr_single_closing').on(table.operationalShiftId, table.tankId).where(sql`reading_type = 'CLOSING'`),
+  index('idx_tsr_shift_id').on(table.operationalShiftId),
+  index('idx_tsr_outlet_id').on(table.outletId),
+  index('idx_tsr_tank_id').on(table.tankId),
+]);
+
+export const fuelReceipts = sqliteTable('fuel_receipts', {
+  id: text('id').primaryKey(),
+  outletId: text('outlet_id').notNull().references(() => retailOutlets.id, { onDelete: 'cascade' }),
+  operationalShiftId: text('operational_shift_id').notNull().references(() => operationalShifts.id, { onDelete: 'cascade' }),
+  ttNumber: text('tt_number').notNull(),
+  invoiceNumber: text('invoice_number').notNull(),
+  invoiceDate: text('invoice_date').notNull(),
+  arrivalAt: text('arrival_at').notNull(),
+  decantationStartedAt: text('decantation_started_at'),
+  decantationCompletedAt: text('decantation_completed_at'),
+  sealVerified: integer('seal_verified', { mode: 'boolean' }).notNull().default(true),
+  sealExceptionReason: text('seal_exception_reason'),
+  status: text('status', { enum: ['ARRIVED', 'VERIFIED', 'DECANTED', 'COMPLETED', 'CANCELLED'] }).notNull().default('ARRIVED'),
+  recordedByUserId: text('recorded_by_user_id').notNull().references(() => users.id),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+}, (table) => [
+  index('idx_fr_outlet_id').on(table.outletId),
+  index('idx_fr_shift_id').on(table.operationalShiftId),
+]);
+
+export const fuelReceiptTankLines = sqliteTable('fuel_receipt_tank_lines', {
+  id: text('id').primaryKey(),
+  fuelReceiptId: text('fuel_receipt_id').notNull().references(() => fuelReceipts.id, { onDelete: 'cascade' }),
+  tankId: text('tank_id').notNull().references(() => tanks.id),
+  productId: text('product_id').notNull().references(() => products.id),
+  invoiceQuantityMilliunits: integer('invoice_quantity_milliunits').notNull(),
+  preDecantReadingId: text('pre_decant_reading_id').references(() => tankStockReadings.id),
+  postDecantReadingId: text('post_decant_reading_id').references(() => tankStockReadings.id),
+  measuredReceivedQuantityMilliunits: integer('measured_received_quantity_milliunits'),
+  receiptVarianceMilliunits: integer('receipt_variance_milliunits'),
+  densityMilliunits: integer('density_milliunits'),
+  temperatureMilliunits: integer('temperature_milliunits'),
+  invoiceDensityMilliunits: integer('invoice_density_milliunits'),
+  densityVarianceMilliunits: integer('density_variance_milliunits'),
+  qualityStatus: text('quality_status', { enum: ['PASS', 'OUT_OF_TOLERANCE', 'NOT_EVALUATED'] }).notNull().default('NOT_EVALUATED'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+}, (table) => [
+  index('idx_frtl_receipt_id').on(table.fuelReceiptId),
+  index('idx_frtl_tank_id').on(table.tankId),
+]);
+
+export const qualityToleranceSettings = sqliteTable('quality_tolerance_settings', {
+  id: text('id').primaryKey(),
+  scopeType: text('scope_type', { enum: ['GLOBAL', 'STATE', 'DIVISION', 'OUTLET'] }).notNull(),
+  scopeEntityId: text('scope_entity_id'),
+  productId: text('product_id').references(() => products.id),
+  densityToleranceMilliunits: integer('density_tolerance_milliunits').notNull(),
+  status: text('status', { enum: ['ACTIVE', 'INACTIVE'] }).notNull().default('ACTIVE'),
+  effectiveFrom: text('effective_from').notNull(),
+  effectiveTo: text('effective_to'),
+  createdAt: text('created_at').notNull(),
+  createdBy: text('created_by').notNull().references(() => users.id),
+}, (table) => [
+  index('idx_qts_scope').on(table.scopeType, table.scopeEntityId),
+  index('idx_qts_product').on(table.productId),
+]);
+
+export const shiftStockReconciliations = sqliteTable('shift_stock_reconciliations', {
+  id: text('id').primaryKey(),
+  operationalShiftId: text('operational_shift_id').notNull().references(() => operationalShifts.id, { onDelete: 'cascade' }),
+  outletId: text('outlet_id').notNull().references(() => retailOutlets.id, { onDelete: 'cascade' }),
+  tankId: text('tank_id').notNull().references(() => tanks.id),
+  productId: text('product_id').notNull().references(() => products.id),
+  openingStockMilliunits: integer('opening_stock_milliunits').notNull(),
+  receiptQuantityMilliunits: integer('receipt_quantity_milliunits').notNull().default(0),
+  salesQuantityMilliunits: integer('sales_quantity_milliunits').notNull().default(0),
+  theoreticalClosingStockMilliunits: integer('theoretical_closing_stock_milliunits').notNull(),
+  physicalClosingStockMilliunits: integer('physical_closing_stock_milliunits').notNull(),
+  varianceMilliunits: integer('variance_milliunits').notNull(),
+  varianceStatus: text('variance_status', { enum: ['GAIN', 'LOSS', 'BALANCED'] }).notNull(),
+  calculatedAt: text('calculated_at').notNull(),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+}, (table) => [
+  uniqueIndex('idx_ssr_shift_tank').on(table.operationalShiftId, table.tankId),
+  index('idx_ssr_shift_id').on(table.operationalShiftId),
+  index('idx_ssr_outlet_id').on(table.outletId),
+]);

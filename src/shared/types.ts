@@ -439,3 +439,211 @@ export interface ShiftEntryGridItem {
   suggestedOpeningTotalizer: string;
   hasPreviousShift: boolean;
 }
+
+// ==========================================
+// Phase 2B: Tank Stock, Calibration, Receipts & Reconciliation Types
+// ==========================================
+
+export interface TankCalibrationPoint {
+  id: string;
+  tankId: string;
+  dipMillimetresMilliunits: number;
+  volumeMilliunits: number;
+  dipMmStr?: string;
+  volumeLitreStr?: string;
+  createdAt: string;
+  createdBy: string;
+}
+
+export interface OperationalShiftTankSnapshot {
+  id: string;
+  operationalShiftId: string;
+  outletId: string;
+  tankId: string;
+  tankNumber: number;
+  tankName: string;
+  productId: string;
+  productCode: string;
+  productName: string;
+  productUnit: ProductUnit;
+  capacityMilliunits: number;
+  safeFillCapacityMilliunits: number;
+  capacityLitresStr?: string;
+  safeFillLitresStr?: string;
+  createdAt: string;
+}
+
+export type TankReadingType = 'OPENING' | 'CLOSING' | 'PRE_RECEIPT' | 'POST_RECEIPT' | 'ADHOC';
+export type TankReadingSource = 'MANUAL' | 'ATG';
+
+export interface TankStockReading {
+  id: string;
+  operationalShiftId: string;
+  outletId: string;
+  tankId: string;
+  productId: string;
+  readingType: TankReadingType;
+  source: TankReadingSource;
+  productDipMmMilliunits: number;
+  waterDipMmMilliunits: number;
+  grossObservedVolumeMilliunits: number;
+  waterVolumeMilliunits: number;
+  netProductVolumeMilliunits: number;
+  productDipMmStr?: string;
+  waterDipMmStr?: string;
+  grossObservedVolumeStr?: string;
+  waterVolumeStr?: string;
+  netProductVolumeStr?: string;
+  recordedAt: string;
+  recordedByUserId: string;
+  notes?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  tankNumber?: number;
+  tankName?: string;
+  productCode?: string;
+  productName?: string;
+  recorderName?: string;
+}
+
+export type FuelReceiptStatus = 'ARRIVED' | 'VERIFIED' | 'DECANTED' | 'COMPLETED' | 'CANCELLED';
+export type QualityStatus = 'PASS' | 'OUT_OF_TOLERANCE' | 'NOT_EVALUATED';
+
+export interface FuelReceipt {
+  id: string;
+  outletId: string;
+  operationalShiftId: string;
+  ttNumber: string;
+  invoiceNumber: string;
+  invoiceDate: string;
+  arrivalAt: string;
+  decantationStartedAt?: string | null;
+  decantationCompletedAt?: string | null;
+  sealVerified: boolean;
+  sealExceptionReason?: string | null;
+  status: FuelReceiptStatus;
+  recordedByUserId: string;
+  createdAt: string;
+  updatedAt: string;
+  lines?: FuelReceiptTankLine[];
+  recorderName?: string;
+}
+
+export interface FuelReceiptTankLine {
+  id: string;
+  fuelReceiptId: string;
+  tankId: string;
+  productId: string;
+  invoiceQuantityMilliunits: number;
+  invoiceQuantityStr?: string;
+  preDecantReadingId?: string | null;
+  postDecantReadingId?: string | null;
+  measuredReceivedQuantityMilliunits?: number | null;
+  measuredReceivedQuantityStr?: string | null;
+  receiptVarianceMilliunits?: number | null;
+  receiptVarianceStr?: string | null;
+  densityMilliunits?: number | null;
+  densityStr?: string | null;
+  temperatureMilliunits?: number | null;
+  temperatureStr?: string | null;
+  invoiceDensityMilliunits?: number | null;
+  invoiceDensityStr?: string | null;
+  densityVarianceMilliunits?: number | null;
+  densityVarianceStr?: string | null;
+  qualityStatus: QualityStatus;
+  createdAt: string;
+  updatedAt: string;
+  tankNumber?: number;
+  tankName?: string;
+  productCode?: string;
+  productName?: string;
+  preDecantReading?: TankStockReading | null;
+  postDecantReading?: TankStockReading | null;
+}
+
+export type QualityScopeType = 'GLOBAL' | 'STATE' | 'DIVISION' | 'OUTLET';
+
+export interface QualityToleranceSetting {
+  id: string;
+  scopeType: QualityScopeType;
+  scopeEntityId?: string | null;
+  productId?: string | null;
+  densityToleranceMilliunits: number;
+  densityToleranceStr?: string;
+  status: 'ACTIVE' | 'INACTIVE';
+  effectiveFrom: string;
+  effectiveTo?: string | null;
+  createdAt: string;
+  createdBy: string;
+  productCode?: string;
+  productName?: string;
+}
+
+export type VarianceStatus = 'GAIN' | 'LOSS' | 'BALANCED';
+
+export interface ShiftStockReconciliation {
+  id: string;
+  operationalShiftId: string;
+  outletId: string;
+  tankId: string;
+  productId: string;
+  openingStockMilliunits: number;
+  receiptQuantityMilliunits: number;
+  salesQuantityMilliunits: number;
+  theoreticalClosingStockMilliunits: number;
+  physicalClosingStockMilliunits: number;
+  varianceMilliunits: number;
+  varianceStatus: VarianceStatus;
+  openingStockStr: string;
+  receiptQuantityStr: string;
+  salesQuantityStr: string;
+  theoreticalClosingStockStr: string;
+  physicalClosingStockStr: string;
+  varianceStr: string;
+  calculatedAt: string;
+  createdAt: string;
+  updatedAt: string;
+  tankNumber?: number;
+  tankName?: string;
+  productCode?: string;
+  productName?: string;
+  productUnit?: ProductUnit;
+}
+
+export interface ShiftStockSummary {
+  operationalShiftId: string;
+  businessDate: string;
+  outletId: string;
+  byTank: Array<{
+    tankId: string;
+    tankNumber: number;
+    tankName: string;
+    productId: string;
+    productCode: string;
+    productName: string;
+    productUnit: ProductUnit;
+    openingStockStr: string;
+    receiptQuantityStr: string;
+    salesQuantityStr: string;
+    theoreticalClosingStockStr: string;
+    physicalClosingStockStr: string;
+    varianceStr: string;
+    varianceStatus: VarianceStatus;
+    hasOpeningReading: boolean;
+    hasClosingReading: boolean;
+    receiptsCount: number;
+  }>;
+  byProduct: Array<{
+    productId: string;
+    productCode: string;
+    productName: string;
+    productUnit: ProductUnit;
+    openingStockStr: string;
+    receiptQuantityStr: string;
+    salesQuantityStr: string;
+    theoreticalClosingStockStr: string;
+    physicalClosingStockStr: string;
+    varianceStr: string;
+    varianceStatus: VarianceStatus;
+  }>;
+}

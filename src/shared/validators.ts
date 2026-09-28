@@ -337,3 +337,89 @@ export const NozzleUnavailabilitySchema = z.object({
   nozzleId: z.string().min(1, 'Nozzle ID is required'),
   reason: z.string().min(3, 'A valid reason (minimum 3 characters) is required').trim(),
 });
+
+// ==========================================
+// Phase 2B: Tank Stock, Calibration, Receipts & Reconciliation Validators
+// ==========================================
+
+export const TankCalibrationPointSchema = z.object({
+  dipMillimetres: StrictDecimalQuantityString,
+  volumeLitres: StrictDecimalQuantityString,
+});
+
+export const TankCalibrationBulkSchema = z.object({
+  points: z.array(TankCalibrationPointSchema).min(2, 'At least 2 calibration points are required to define a calibration chart'),
+});
+
+export const TankStockReadingSchema = z.object({
+  tankId: z.string().min(1, 'Tank ID is required'),
+  readingType: z.enum(['OPENING', 'CLOSING', 'PRE_RECEIPT', 'POST_RECEIPT', 'ADHOC']),
+  source: z.enum(['MANUAL', 'ATG']).default('MANUAL'),
+  productDipMm: StrictDecimalQuantityString,
+  waterDipMm: StrictDecimalQuantityString.default('0.000'),
+  notes: z.string().trim().nullable().optional(),
+}).refine(data => {
+  try {
+    const prodDip = parseMilliunits(data.productDipMm);
+    const waterDip = parseMilliunits(data.waterDipMm);
+    return waterDip <= prodDip;
+  } catch {
+    return true;
+  }
+}, {
+  message: 'Water dip cannot exceed product dip',
+  path: ['waterDipMm'],
+});
+
+export const FuelReceiptLineSchema = z.object({
+  tankId: z.string().min(1, 'Tank ID is required'),
+  productId: z.string().min(1, 'Product ID is required'),
+  invoiceQuantity: StrictDecimalQuantityString,
+  density: StrictDecimalQuantityString.optional().nullable(),
+  temperature: StrictDecimalQuantityString.optional().nullable(),
+  invoiceDensity: StrictDecimalQuantityString.optional().nullable(),
+});
+
+export const FuelReceiptCreateSchema = z.object({
+  ttNumber: z.string().min(1, 'Tank Truck / TT Number is required').trim(),
+  invoiceNumber: z.string().min(1, 'Invoice Number is required').trim(),
+  invoiceDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Invoice date must be YYYY-MM-DD'),
+  arrivalAt: z.string().min(1, 'Arrival timestamp is required'),
+  sealVerified: z.boolean().default(true),
+  sealExceptionReason: z.string().trim().nullable().optional(),
+  lines: z.array(FuelReceiptLineSchema).min(1, 'At least one receiving tank line is required'),
+}).refine(data => {
+  if (data.sealVerified === false && (!data.sealExceptionReason || data.sealExceptionReason.trim().length === 0)) {
+    return false;
+  }
+  return true;
+}, {
+  message: 'A seal exception reason is required when seal is not verified',
+  path: ['sealExceptionReason'],
+});
+
+export const FuelReceiptLineUpdateSchema = z.object({
+  preDecantReadingId: z.string().optional().nullable(),
+  postDecantReadingId: z.string().optional().nullable(),
+  density: StrictDecimalQuantityString.optional().nullable(),
+  temperature: StrictDecimalQuantityString.optional().nullable(),
+  invoiceDensity: StrictDecimalQuantityString.optional().nullable(),
+});
+
+export const FuelReceiptStatusUpdateSchema = z.object({
+  status: z.enum(['ARRIVED', 'VERIFIED', 'DECANTED', 'COMPLETED', 'CANCELLED']),
+  decantationStartedAt: z.string().optional().nullable(),
+  decantationCompletedAt: z.string().optional().nullable(),
+  sealVerified: z.boolean().optional(),
+  sealExceptionReason: z.string().optional().nullable(),
+});
+
+export const QualityToleranceSchema = z.object({
+  scopeType: z.enum(['GLOBAL', 'STATE', 'DIVISION', 'OUTLET']),
+  scopeEntityId: z.string().optional().nullable(),
+  productId: z.string().optional().nullable(),
+  densityTolerance: StrictDecimalQuantityString,
+  status: z.enum(['ACTIVE', 'INACTIVE']).default('ACTIVE'),
+  effectiveFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Effective from date must be YYYY-MM-DD'),
+  effectiveTo: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Effective to date must be YYYY-MM-DD').optional().nullable(),
+});

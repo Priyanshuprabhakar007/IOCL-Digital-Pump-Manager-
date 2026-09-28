@@ -249,11 +249,12 @@ shifts.post('/shifts/:shiftId/close', requirePermission(PERMISSIONS.SHIFTS_CLOSE
         error: { code: 'SHIFT_CLOSED', message: 'Operational shift was closed concurrently.' },
       }, 409);
     }
+    const statusCode = (closeRes.error === 'INCOMPLETE_TANK_STOCK_DATA' || closeRes.error === 'INCOMPLETE_RECEIPTS') ? 400 : 404;
     return c.json({
       success: false,
       data: null,
-      error: { code: 'NOT_FOUND', message: 'Operational shift not found or invalid' },
-    }, 404);
+      error: { code: closeRes.error || 'NOT_FOUND', message: closeRes.message || 'Operational shift not found or invalid' },
+    }, statusCode as any);
   }
 
   const closed = closeRes.shift!;

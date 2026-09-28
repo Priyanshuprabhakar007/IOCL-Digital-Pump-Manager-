@@ -70,6 +70,18 @@ export const PERMISSIONS = {
   // Phase 2A Hardened: Meter Readings
   METER_READINGS_READ: 'meter_readings.read',
   METER_READINGS_WRITE: 'meter_readings.write',
+
+  // Phase 2B: Tank Stock, Calibration, Fuel Receipt & Reconciliation
+  TANK_CALIBRATION_READ: 'tank_calibration.read',
+  TANK_CALIBRATION_WRITE: 'tank_calibration.write',
+  TANK_STOCK_READ: 'tank_stock.read',
+  TANK_STOCK_WRITE: 'tank_stock.write',
+  FUEL_RECEIPTS_READ: 'fuel_receipts.read',
+  FUEL_RECEIPTS_WRITE: 'fuel_receipts.write',
+  QUALITY_READ: 'quality.read',
+  QUALITY_WRITE: 'quality.write',
+  QUALITY_TOLERANCE_MANAGE: 'quality_tolerance.manage',
+  STOCK_RECONCILIATION_READ: 'stock_reconciliation.read',
 } as const;
 
 export type PermissionCode = typeof PERMISSIONS[keyof typeof PERMISSIONS];

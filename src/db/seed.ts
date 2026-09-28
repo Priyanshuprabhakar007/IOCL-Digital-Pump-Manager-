@@ -75,6 +75,18 @@ export async function seedDatabase(db: AppDatabase) {
     // Phase 2A Hardened: Meter Readings
     { id: 'perm-rdg-r', code: PERMISSIONS.METER_READINGS_READ, name: 'Read Meter Readings', description: 'View nozzle meter readings' },
     { id: 'perm-rdg-w', code: PERMISSIONS.METER_READINGS_WRITE, name: 'Write Meter Readings', description: 'Record meter readings and unavailability' },
+
+    // Phase 2B: Tank Stock, Calibration, Fuel Receipts, Quality & Reconciliation
+    { id: 'perm-tcal-r', code: PERMISSIONS.TANK_CALIBRATION_READ, name: 'Read Tank Calibration', description: 'View tank calibration charts and points' },
+    { id: 'perm-tcal-w', code: PERMISSIONS.TANK_CALIBRATION_WRITE, name: 'Write Tank Calibration', description: 'Manage tank calibration charts and import data' },
+    { id: 'perm-tstk-r', code: PERMISSIONS.TANK_STOCK_READ, name: 'Read Tank Stock', description: 'View tank physical dips and stock readings' },
+    { id: 'perm-tstk-w', code: PERMISSIONS.TANK_STOCK_WRITE, name: 'Write Tank Stock', description: 'Record opening, closing, and ad-hoc tank dips' },
+    { id: 'perm-rcpt-r', code: PERMISSIONS.FUEL_RECEIPTS_READ, name: 'Read Fuel Receipts', description: 'View tanker fuel receipts and delivery records' },
+    { id: 'perm-rcpt-w', code: PERMISSIONS.FUEL_RECEIPTS_WRITE, name: 'Write Fuel Receipts', description: 'Record tanker delivery, decantation, and line measurements' },
+    { id: 'perm-qual-r', code: PERMISSIONS.QUALITY_READ, name: 'Read Quality Parameters', description: 'View density and temperature quality records' },
+    { id: 'perm-qual-w', code: PERMISSIONS.QUALITY_WRITE, name: 'Write Quality Parameters', description: 'Record fuel receipt density and temperature observations' },
+    { id: 'perm-qtol-m', code: PERMISSIONS.QUALITY_TOLERANCE_MANAGE, name: 'Manage Quality Tolerances', description: 'Configure scope-based density and quality tolerance rules' },
+    { id: 'perm-srec-r', code: PERMISSIONS.STOCK_RECONCILIATION_READ, name: 'Read Stock Reconciliation', description: 'View shift and product level stock reconciliation summaries' },
   ];
   await db.insert(schema.permissions).values(permissionsList).onConflictDoNothing();
 
@@ -87,6 +99,7 @@ export async function seedDatabase(db: AppDatabase) {
     'perm-h-r', 'perm-o-r', 'perm-s-r', 'perm-s-a',
     'perm-d-r', 'perm-a-r',
     'perm-prod-r', 'perm-oprod-r', 'perm-tank-r', 'perm-disp-r', 'perm-nozz-r', 'perm-stm-r', 'perm-shf-r', 'perm-rdg-r',
+    'perm-tcal-r', 'perm-tstk-r', 'perm-rcpt-r', 'perm-qual-r', 'perm-qtol-m', 'perm-srec-r',
   ].map(pId => ({ roleId: 'role-so', permissionId: pId }));
 
   const divOfficePerms = [
@@ -94,16 +107,19 @@ export async function seedDatabase(db: AppDatabase) {
     'perm-h-r', 'perm-o-r', 'perm-o-u',
     'perm-s-r', 'perm-d-r', 'perm-d-w', 'perm-a-r',
     'perm-prod-r', 'perm-oprod-r', 'perm-tank-r', 'perm-disp-r', 'perm-nozz-r', 'perm-stm-r', 'perm-shf-r', 'perm-rdg-r',
+    'perm-tcal-r', 'perm-tstk-r', 'perm-rcpt-r', 'perm-qual-r', 'perm-srec-r',
   ].map(pId => ({ roleId: 'role-do', permissionId: pId }));
 
   const bmPerms = [
     'perm-u-r', 'perm-h-r', 'perm-o-r', 'perm-s-r', 'perm-d-r', 'perm-a-r',
     'perm-prod-r', 'perm-oprod-r', 'perm-tank-r', 'perm-disp-r', 'perm-nozz-r', 'perm-stm-r', 'perm-shf-r', 'perm-rdg-r',
+    'perm-tcal-r', 'perm-tstk-r', 'perm-rcpt-r', 'perm-qual-r', 'perm-srec-r',
   ].map(pId => ({ roleId: 'role-bm', permissionId: pId }));
 
   const fieldOfficerPerms = [
     'perm-h-r', 'perm-o-r', 'perm-o-u', 'perm-d-r', 'perm-d-w',
     'perm-prod-r', 'perm-oprod-r', 'perm-tank-r', 'perm-disp-r', 'perm-nozz-r', 'perm-stm-r', 'perm-shf-r', 'perm-rdg-r',
+    'perm-tcal-r', 'perm-tstk-r', 'perm-rcpt-r', 'perm-qual-r', 'perm-srec-r',
   ].map(pId => ({ roleId: 'role-fo', permissionId: pId }));
 
   const dealerPerms = [
@@ -115,6 +131,11 @@ export async function seedDatabase(db: AppDatabase) {
     'perm-stm-r', 'perm-stm-w',
     'perm-shf-r', 'perm-shf-o', 'perm-shf-c',
     'perm-rdg-r', 'perm-rdg-w',
+    'perm-tcal-r', 'perm-tcal-w',
+    'perm-tstk-r', 'perm-tstk-w',
+    'perm-rcpt-r', 'perm-rcpt-w',
+    'perm-qual-r', 'perm-qual-w',
+    'perm-srec-r',
   ].map(pId => ({ roleId: 'role-dealer', permissionId: pId }));
 
   const cspPerms = [
@@ -126,6 +147,11 @@ export async function seedDatabase(db: AppDatabase) {
     'perm-stm-r',
     'perm-shf-r', 'perm-shf-o', 'perm-shf-c',
     'perm-rdg-r', 'perm-rdg-w',
+    'perm-tcal-r',
+    'perm-tstk-r', 'perm-tstk-w',
+    'perm-rcpt-r', 'perm-rcpt-w',
+    'perm-qual-r', 'perm-qual-w',
+    'perm-srec-r',
   ].map(pId => ({ roleId: 'role-csp', permissionId: pId }));
 
   await db.insert(schema.rolePermissions).values([
@@ -307,6 +333,21 @@ export async function seedDatabase(db: AppDatabase) {
       updatedAt: now,
       createdBy: 'user-admin',
     },
+    {
+      id: 'tank-ro1-3',
+      outletId: 'ro-1001',
+      tankNumber: 3,
+      name: 'Tank 3 - XP95 (15 KL)',
+      productId: 'prod-xp95',
+      capacityLitres: 15000,
+      safeFillCapacityLitres: 14250,
+      minimumOperatingLevelLitres: 1000,
+      status: 'ACTIVE' as const,
+      commissionedAt: '2023-01-15T00:00:00Z',
+      createdAt: now,
+      updatedAt: now,
+      createdBy: 'user-admin',
+    },
   ]);
 
   // 13. Dispensers (Park Street RO)
@@ -451,7 +492,72 @@ export async function seedDatabase(db: AppDatabase) {
     },
   ]);
 
-  // 16. Audit Log Initial Entry
+  // 16. Tank Calibration Charts (Park Street RO Tanks 1, 2, 3)
+  // Dip in mm (milliunits, 1000 = 1.000 mm), Volume in Litres (milliunits, 1000 = 1.000 L)
+  const calibrationPointsData = [
+    // Tank 1: 20 KL (0 to 2500 mm)
+    { id: 'tcp-t1-000', tankId: 'tank-ro1-1', dipMillimetresMilliunits: 0, volumeMilliunits: 0, createdAt: now, createdBy: 'user-admin' },
+    { id: 'tcp-t1-250', tankId: 'tank-ro1-1', dipMillimetresMilliunits: 250000, volumeMilliunits: 1200000, createdAt: now, createdBy: 'user-admin' },
+    { id: 'tcp-t1-500', tankId: 'tank-ro1-1', dipMillimetresMilliunits: 500000, volumeMilliunits: 3100000, createdAt: now, createdBy: 'user-admin' },
+    { id: 'tcp-t1-750', tankId: 'tank-ro1-1', dipMillimetresMilliunits: 750000, volumeMilliunits: 5600000, createdAt: now, createdBy: 'user-admin' },
+    { id: 'tcp-t1-1000', tankId: 'tank-ro1-1', dipMillimetresMilliunits: 1000000, volumeMilliunits: 8500000, createdAt: now, createdBy: 'user-admin' },
+    { id: 'tcp-t1-1250', tankId: 'tank-ro1-1', dipMillimetresMilliunits: 1250000, volumeMilliunits: 11500000, createdAt: now, createdBy: 'user-admin' },
+    { id: 'tcp-t1-1500', tankId: 'tank-ro1-1', dipMillimetresMilliunits: 1500000, volumeMilliunits: 14400000, createdAt: now, createdBy: 'user-admin' },
+    { id: 'tcp-t1-1750', tankId: 'tank-ro1-1', dipMillimetresMilliunits: 1750000, volumeMilliunits: 16900000, createdAt: now, createdBy: 'user-admin' },
+    { id: 'tcp-t1-2000', tankId: 'tank-ro1-1', dipMillimetresMilliunits: 2000000, volumeMilliunits: 18800000, createdAt: now, createdBy: 'user-admin' },
+    { id: 'tcp-t1-2250', tankId: 'tank-ro1-1', dipMillimetresMilliunits: 2250000, volumeMilliunits: 19700000, createdAt: now, createdBy: 'user-admin' },
+    { id: 'tcp-t1-2500', tankId: 'tank-ro1-1', dipMillimetresMilliunits: 2500000, volumeMilliunits: 20000000, createdAt: now, createdBy: 'user-admin' },
+
+    // Tank 2: 25 KL (0 to 2800 mm)
+    { id: 'tcp-t2-000', tankId: 'tank-ro1-2', dipMillimetresMilliunits: 0, volumeMilliunits: 0, createdAt: now, createdBy: 'user-admin' },
+    { id: 'tcp-t2-500', tankId: 'tank-ro1-2', dipMillimetresMilliunits: 500000, volumeMilliunits: 3800000, createdAt: now, createdBy: 'user-admin' },
+    { id: 'tcp-t2-1000', tankId: 'tank-ro1-2', dipMillimetresMilliunits: 1000000, volumeMilliunits: 9500000, createdAt: now, createdBy: 'user-admin' },
+    { id: 'tcp-t2-1500', tankId: 'tank-ro1-2', dipMillimetresMilliunits: 1500000, volumeMilliunits: 15500000, createdAt: now, createdBy: 'user-admin' },
+    { id: 'tcp-t2-2000', tankId: 'tank-ro1-2', dipMillimetresMilliunits: 2000000, volumeMilliunits: 21200000, createdAt: now, createdBy: 'user-admin' },
+    { id: 'tcp-t2-2500', tankId: 'tank-ro1-2', dipMillimetresMilliunits: 2500000, volumeMilliunits: 24500000, createdAt: now, createdBy: 'user-admin' },
+    { id: 'tcp-t2-2800', tankId: 'tank-ro1-2', dipMillimetresMilliunits: 2800000, volumeMilliunits: 25000000, createdAt: now, createdBy: 'user-admin' },
+
+    // Tank 3: 15 KL (0 to 2200 mm)
+    { id: 'tcp-t3-000', tankId: 'tank-ro1-3', dipMillimetresMilliunits: 0, volumeMilliunits: 0, createdAt: now, createdBy: 'user-admin' },
+    { id: 'tcp-t3-500', tankId: 'tank-ro1-3', dipMillimetresMilliunits: 500000, volumeMilliunits: 2500000, createdAt: now, createdBy: 'user-admin' },
+    { id: 'tcp-t3-1000', tankId: 'tank-ro1-3', dipMillimetresMilliunits: 1000000, volumeMilliunits: 6800000, createdAt: now, createdBy: 'user-admin' },
+    { id: 'tcp-t3-1500', tankId: 'tank-ro1-3', dipMillimetresMilliunits: 1500000, volumeMilliunits: 11200000, createdAt: now, createdBy: 'user-admin' },
+    { id: 'tcp-t3-2000', tankId: 'tank-ro1-3', dipMillimetresMilliunits: 2000000, volumeMilliunits: 14500000, createdAt: now, createdBy: 'user-admin' },
+    { id: 'tcp-t3-2200', tankId: 'tank-ro1-3', dipMillimetresMilliunits: 2200000, volumeMilliunits: 15000000, createdAt: now, createdBy: 'user-admin' },
+  ];
+  await db.insert(schema.tankCalibrationPoints).values(calibrationPointsData);
+
+  // 17. Quality Tolerance Settings
+  await db.insert(schema.qualityToleranceSettings).values([
+    // GLOBAL default density tolerance: +/- 3.000 kg/m3 (3000 milliunits)
+    {
+      id: 'qts-global-default',
+      scopeType: 'GLOBAL' as const,
+      scopeEntityId: null,
+      productId: null,
+      densityToleranceMilliunits: 3000,
+      status: 'ACTIVE' as const,
+      effectiveFrom: '2024-01-01',
+      effectiveTo: null,
+      createdAt: now,
+      createdBy: 'user-admin',
+    },
+    // MS Product specific tolerance: +/- 2.500 kg/m3
+    {
+      id: 'qts-ms-global',
+      scopeType: 'GLOBAL' as const,
+      scopeEntityId: null,
+      productId: 'prod-ms',
+      densityToleranceMilliunits: 2500,
+      status: 'ACTIVE' as const,
+      effectiveFrom: '2024-01-01',
+      effectiveTo: null,
+      createdAt: now,
+      createdBy: 'user-admin',
+    },
+  ]);
+
+  // 18. Audit Log Initial Entry
   await db.insert(schema.auditLogs).values({
     id: 'audit-init-001',
     userId: 'user-admin',
@@ -459,7 +565,7 @@ export async function seedDatabase(db: AppDatabase) {
     entityType: 'SYSTEM',
     entityId: 'SYSTEM',
     oldValueJson: null,
-    newValueJson: JSON.stringify({ message: 'IOCL Digital Pump Manager database seeded successfully with Phase 1 & 2A infrastructure' }),
+    newValueJson: JSON.stringify({ message: 'IOCL Digital Pump Manager database seeded successfully with Phase 1, 2A & 2B infrastructure' }),
     ipAddress: '127.0.0.1',
     userAgent: 'D1 Seeder Engine',
     createdAt: now,

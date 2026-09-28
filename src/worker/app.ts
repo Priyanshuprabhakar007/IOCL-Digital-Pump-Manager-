@@ -12,6 +12,11 @@ import documentRoutes from './routes/documents';
 import productRoutes from './routes/products';
 import pumpOperationsRoutes from './routes/pumpOperations';
 import shiftRoutes from './routes/shifts';
+import tankCalibrationRoutes from './routes/tankCalibration';
+import tankStockRoutes from './routes/tankStock';
+import fuelReceiptRoutes from './routes/fuelReceipts';
+import qualityToleranceRoutes from './routes/qualityTolerances';
+import stockReconciliationRoutes from './routes/stockReconciliation';
 
 export const app = new Hono<{ Bindings: EnvBindings }>();
 
@@ -98,6 +103,11 @@ app.route('/api/v1/documents', documentRoutes);
 app.route('/api/v1/products', productRoutes);
 app.route('/api/v1', pumpOperationsRoutes);
 app.route('/api/v1', shiftRoutes);
+app.route('/api/v1', tankCalibrationRoutes);
+app.route('/api/v1', tankStockRoutes);
+app.route('/api/v1', fuelReceiptRoutes);
+app.route('/api/v1', qualityToleranceRoutes);
+app.route('/api/v1', stockReconciliationRoutes);
 
 // Global Error Handler - Generic external response, detailed internal server log
 app.onError((err, c) => {
