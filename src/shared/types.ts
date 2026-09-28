@@ -509,6 +509,62 @@ export interface TankStockReading {
 export type FuelReceiptStatus = 'ARRIVED' | 'VERIFIED' | 'DECANTED' | 'COMPLETED' | 'CANCELLED';
 export type QualityStatus = 'PASS' | 'OUT_OF_TOLERANCE' | 'NOT_EVALUATED';
 
+// ==========================================
+// Phase 2C: Financial Reconciliation Types
+// ==========================================
+
+export interface ProductPrice {
+  id: string;
+  outletId: string;
+  productId: string;
+  pricePaisePerUnit: number;
+  effectiveFrom: string;
+  effectiveTo?: string | null;
+  status: "ACTIVE" | "INACTIVE";
+}
+
+export interface CreditParty {
+  id: string;
+  outletId: string;
+  partyCode: string;
+  partyName: string;
+  status: "ACTIVE" | "INACTIVE";
+}
+
+export type CollectionType = "CASH" | "POS_CARD" | "UPI" | "FLEET_CARD" | "CREDIT_SALE" | "DIRECT_BANK_DROP";
+
+export interface ShiftCollection {
+  id: string;
+  operationalShiftId: string;
+  outletId: string;
+  collectionType: CollectionType;
+  amountPaise: number;
+  provider?: string | null;
+  referenceNumber?: string | null;
+  creditPartyId?: string | null;
+  collectedAt: string;
+  recordedByUserId: string;
+  creditPartyCodeSnapshot?: string | null;
+  creditPartyNameSnapshot?: string | null;
+}
+
+export interface CashHandover {
+  id: string;
+  operationalShiftId: string;
+  outletId: string;
+  amountPaise: number;
+  status: "PENDING" | "ACKNOWLEDGED" | "DISPUTED";
+}
+
+export interface BankDeposit {
+  id: string;
+  outletId: string;
+  operationalShiftId: string;
+  depositChannel: "BANK_BRANCH" | "CASH_DROP_BOX";
+  amountPaise: number;
+  status: "SUBMITTED" | "VERIFIED" | "REJECTED";
+}
+
 export interface FuelReceipt {
   id: string;
   outletId: string;
