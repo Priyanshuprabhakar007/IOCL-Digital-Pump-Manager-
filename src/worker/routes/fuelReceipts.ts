@@ -369,9 +369,23 @@ fuelReceipts.patch('/fuel-receipts/:id/status', requirePermission(PERMISSIONS.FU
     sealVerified,
     sealExceptionReason,
     updatedAt: nowIso,
-  });
+  }, receipt.status);
 
   if (!res.success || !res.receipt) {
+    if (res.finalized) {
+      return c.json({
+        success: false,
+        data: null,
+        error: { code: 'RECEIPT_FINALIZED', message: 'Fuel receipt is finalized and cannot be modified.' },
+      }, 409);
+    }
+    if (res.error === 'RECEIPT_STATE_CHANGED') {
+      return c.json({
+        success: false,
+        data: res.receipt,
+        error: { code: 'RECEIPT_STATE_CHANGED', message: `Fuel receipt state has changed (current status: ${res.receipt?.status || 'UNKNOWN'}).` },
+      }, 409);
+    }
     return c.json({
       success: false,
       data: null,

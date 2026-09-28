@@ -304,7 +304,7 @@ export const operationalShifts = sqliteTable('operational_shifts', {
   updatedAt: text('updated_at').notNull(),
 }, (table) => [
   uniqueIndex('idx_op_shifts_unique').on(table.outletId, table.shiftTemplateId, table.businessDate),
-  uniqueIndex('idx_operational_shifts_single_open').on(table.outletId).where(sql`status = 'OPEN'`),
+  uniqueIndex('idx_operational_shifts_single_active').on(table.outletId).where(sql`status IN ('OPEN', 'CLOSING')`),
   index('idx_op_shifts_outlet_id').on(table.outletId),
   index('idx_op_shifts_business_date').on(table.businessDate),
   index('idx_op_shifts_status').on(table.status),

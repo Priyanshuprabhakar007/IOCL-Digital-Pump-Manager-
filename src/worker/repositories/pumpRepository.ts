@@ -1,6 +1,6 @@
 import { AppDatabase } from '../../db';
 import * as schema from '../../db/schema';
-import { eq, and, desc, asc, sql, ne } from 'drizzle-orm';
+import { eq, and, desc, asc, sql, ne, inArray } from 'drizzle-orm';
 import {
   Product,
   OutletProduct,
@@ -602,12 +602,21 @@ export class PumpRepository {
     };
   }
 
-  async findActiveOpenShift(outletId: string): Promise<OperationalShift | null> {
+  async findActiveOperationalShift(outletId: string): Promise<OperationalShift | null> {
     const [row] = await this.db
       .select()
       .from(schema.operationalShifts)
-      .where(and(eq(schema.operationalShifts.outletId, outletId), eq(schema.operationalShifts.status, 'OPEN')));
+      .where(
+        and(
+          eq(schema.operationalShifts.outletId, outletId),
+          inArray(schema.operationalShifts.status, ['OPEN', 'CLOSING'])
+        )
+      );
     return (row as OperationalShift) || null;
+  }
+
+  async findActiveOpenShift(outletId: string): Promise<OperationalShift | null> {
+    return this.findActiveOperationalShift(outletId);
   }
 
   async findExistingShift(outletId: string, shiftTemplateId: string, businessDate: string): Promise<OperationalShift | null> {
@@ -1967,49 +1976,58 @@ export class PumpRepository {
   ): Promise<{ success: boolean; receipt: FuelReceipt | null; shiftClosed?: boolean; error?: string }> {
     const sealVerifiedNum = receiptData.sealVerified ? 1 : 0;
 
-    // Condition header insert directly on operational_shifts.status = 'OPEN'
-    const insertedRows = await this.db.all<{ id: string }>(
-      sql`INSERT INTO fuel_receipts (
-            id, outlet_id, operational_shift_id, tt_number, invoice_number, invoice_date,
-            arrival_at, seal_verified, seal_exception_reason, status, recorded_by_user_id, created_at, updated_at
-          )
-          SELECT
-            ${receiptData.id}, ${receiptData.outletId}, ${receiptData.operationalShiftId}, ${receiptData.ttNumber},
-            ${receiptData.invoiceNumber}, ${receiptData.invoiceDate}, ${receiptData.arrivalAt}, ${sealVerifiedNum},
-            ${receiptData.sealExceptionReason || null}, 'ARRIVED', ${receiptData.recordedByUserId}, ${receiptData.createdAt}, ${receiptData.updatedAt}
-          WHERE EXISTS (
-            SELECT 1 FROM operational_shifts WHERE id = ${receiptData.operationalShiftId} AND status = 'OPEN'
-          )
-          RETURNING id`
-    );
+    try {
+      await this.db.transaction(async (tx) => {
+        const [shift] = await tx.select().from(schema.operationalShifts).where(eq(schema.operationalShifts.id, receiptData.operationalShiftId));
+        if (!shift || shift.status !== 'OPEN') {
+          throw new Error('SHIFT_CLOSED');
+        }
 
-    if (!insertedRows || insertedRows.length === 0) {
-      return { success: false, receipt: null, shiftClosed: true, error: 'SHIFT_CLOSED' };
-    }
+        await tx.insert(schema.fuelReceipts).values({
+          id: receiptData.id,
+          outletId: receiptData.outletId,
+          operationalShiftId: receiptData.operationalShiftId,
+          ttNumber: receiptData.ttNumber,
+          invoiceNumber: receiptData.invoiceNumber,
+          invoiceDate: receiptData.invoiceDate,
+          arrivalAt: receiptData.arrivalAt,
+          sealVerified: sealVerifiedNum === 1,
+          sealExceptionReason: receiptData.sealExceptionReason || null,
+          status: 'ARRIVED',
+          recordedByUserId: receiptData.recordedByUserId,
+          createdAt: receiptData.createdAt,
+          updatedAt: receiptData.updatedAt,
+        });
 
-    if (linesData.length > 0) {
-      const lineInserts = linesData.map(line =>
-        this.db.insert(schema.fuelReceiptTankLines).values({
-          id: line.id,
-          fuelReceiptId: receiptData.id,
-          tankId: line.tankId,
-          productId: line.productId,
-          invoiceQuantityMilliunits: line.invoiceQuantityMilliunits,
-          densityMilliunits: line.densityMilliunits || null,
-          temperatureMilliunits: line.temperatureMilliunits || null,
-          invoiceDensityMilliunits: line.invoiceDensityMilliunits || null,
-          densityVarianceMilliunits: line.densityVarianceMilliunits || null,
-          qualityStatus: line.qualityStatus,
-          appliedToleranceSettingId: line.appliedToleranceSettingId || null,
-          appliedDensityToleranceMilliunits: line.appliedDensityToleranceMilliunits || null,
-          createdAt: line.createdAt,
-          updatedAt: line.updatedAt,
-        })
-      );
-      await (this.db as any).batch(lineInserts);
+        for (const line of linesData) {
+          await tx.insert(schema.fuelReceiptTankLines).values({
+            id: line.id,
+            fuelReceiptId: receiptData.id,
+            tankId: line.tankId,
+            productId: line.productId,
+            invoiceQuantityMilliunits: line.invoiceQuantityMilliunits,
+            densityMilliunits: line.densityMilliunits || null,
+            temperatureMilliunits: line.temperatureMilliunits || null,
+            invoiceDensityMilliunits: line.invoiceDensityMilliunits || null,
+            densityVarianceMilliunits: line.densityVarianceMilliunits || null,
+            qualityStatus: line.qualityStatus,
+            appliedToleranceSettingId: line.appliedToleranceSettingId || null,
+            appliedDensityToleranceMilliunits: line.appliedDensityToleranceMilliunits || null,
+            createdAt: line.createdAt,
+            updatedAt: line.updatedAt,
+          });
+        }
+      });
+    } catch (err: any) {
+      const msg = err?.message || '';
+      const isShiftClosed = msg.includes('SHIFT_CLOSED');
+      return { success: false, receipt: null, shiftClosed: isShiftClosed, error: isShiftClosed ? 'SHIFT_CLOSED' : (err?.message || 'TRANSACTION_FAILED') };
     }
 
     const created = await this.findFuelReceiptById(receiptData.id);
+    if (!created) {
+      return { success: false, receipt: null, shiftClosed: true, error: 'SHIFT_CLOSED' };
+    }
     return { success: true, receipt: created };
   }
 
@@ -2047,7 +2065,14 @@ export class PumpRepository {
       if (existing && (existing.status === 'COMPLETED' || existing.status === 'CANCELLED')) {
         return { success: false, receipt: existing, finalized: true, error: 'RECEIPT_FINALIZED' };
       }
-      return { success: false, receipt: existing, shiftClosed: true, error: 'SHIFT_CLOSED' };
+      if (existing && expectedCurrentStatus && existing.status !== expectedCurrentStatus) {
+        return { success: false, receipt: existing, error: 'RECEIPT_STATE_CHANGED' };
+      }
+      const [shift] = await this.db.select().from(schema.operationalShifts).where(eq(schema.operationalShifts.id, shiftId));
+      if (!shift || shift.status !== 'OPEN') {
+        return { success: false, receipt: existing || null, shiftClosed: true, error: 'SHIFT_CLOSED' };
+      }
+      return { success: false, receipt: existing || null, error: 'RECEIPT_STATE_CHANGED' };
     }
 
     const updated = await this.findFuelReceiptById(id);

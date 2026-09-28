@@ -60,15 +60,15 @@ shifts.post('/outlets/:outletId/shifts/open', requirePermission(PERMISSIONS.SHIF
     return c.json({ success: false, data: null, error: { code: 'FORBIDDEN', message: 'No authority over this outlet' } }, 403);
   }
 
-  // Phase 2A Hardening: Enforce at most ONE operational shift with status OPEN for an outlet
-  const activeOpenShift = await pumpRepo.findActiveOpenShift(outletId);
-  if (activeOpenShift) {
+  // Phase 2B: Enforce at most ONE active operational shift (OPEN or CLOSING) for an outlet
+  const activeShift = await pumpRepo.findActiveOperationalShift(outletId);
+  if (activeShift) {
     return c.json({
       success: false,
       data: null,
       error: {
         code: 'OPEN_SHIFT_EXISTS',
-        message: `An active operational shift is already OPEN for this outlet (Shift ID: ${activeOpenShift.id}, Date: ${activeOpenShift.businessDate}). Close the prior shift before opening a new one.`,
+        message: `An active operational shift is already ${activeShift.status} for this outlet (Shift ID: ${activeShift.id}, Date: ${activeShift.businessDate}). Close the prior shift before opening a new one.`,
       },
     }, 409);
   }
