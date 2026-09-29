@@ -500,3 +500,35 @@ export const QualityToleranceSchema = z.object({
   effectiveFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Effective from date must be YYYY-MM-DD'),
   effectiveTo: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Effective to date must be YYYY-MM-DD').optional().nullable(),
 });
+
+export const CngShiftLogSchema = z.object({
+  mfmOpeningKg: StrictDecimalQuantityString,
+  mfmClosingKg: StrictDecimalQuantityString,
+  gridIntakeKg: StrictDecimalQuantityString.optional().nullable(),
+  notes: z.string().trim().optional().nullable(),
+}).refine(data => {
+  try {
+    const op = parseMilliunits(data.mfmOpeningKg);
+    const cl = parseMilliunits(data.mfmClosingKg);
+    return cl >= op;
+  } catch {
+    return true;
+  }
+}, {
+  message: 'Closing MFM reading must be greater than or equal to opening MFM reading',
+  path: ['mfmClosingKg'],
+});
+
+export const CngPressureReadingSchema = z.object({
+  recordedAt: z.string().min(1, 'Recorded at timestamp is required'),
+  pressureUnit: z.string().trim().min(1, 'Pressure unit is required'),
+  suctionPressure: StrictDecimalQuantityString.optional().nullable(),
+  dischargePressure: StrictDecimalQuantityString.optional().nullable(),
+  cascadePressure: StrictDecimalQuantityString.optional().nullable(),
+  notes: z.string().trim().optional().nullable(),
+}).refine(data => {
+  return data.suctionPressure != null || data.dischargePressure != null || data.cascadePressure != null;
+}, {
+  message: 'At least one pressure reading (suction, discharge, or cascade) is required',
+  path: ['suctionPressure'],
+});

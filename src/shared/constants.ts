@@ -97,6 +97,10 @@ export const PERMISSIONS = {
   BANK_DEPOSITS_WRITE: 'bank_deposits.write',
   BANK_DEPOSITS_VERIFY: 'bank_deposits.verify',
   FINANCIAL_RECONCILIATION_READ: 'financial_reconciliation.read',
+
+  // Phase 3A-1: CNG Operations
+  CNG_OPERATIONS_READ: 'cng_operations.read',
+  CNG_OPERATIONS_WRITE: 'cng_operations.write',
 } as const;
 
 export type PermissionCode = typeof PERMISSIONS[keyof typeof PERMISSIONS];

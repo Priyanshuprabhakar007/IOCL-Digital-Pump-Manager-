@@ -645,3 +645,39 @@ export const shiftFinancialReconciliations = sqliteTable('shift_financial_reconc
   updatedAt: text('updated_at').notNull(),
 });
 
+export const cngShiftLogs = sqliteTable('cng_shift_logs', {
+  id: text('id').primaryKey(),
+  operationalShiftId: text('operational_shift_id').notNull().references(() => operationalShifts.id).unique(),
+  outletId: text('outlet_id').notNull().references(() => retailOutlets.id),
+  mfmOpeningKgMilliunits: integer('mfm_opening_kg_milliunits').notNull(),
+  mfmClosingKgMilliunits: integer('mfm_closing_kg_milliunits').notNull(),
+  netSalesKgMilliunits: integer('net_sales_kg_milliunits').notNull(),
+  gridIntakeKgMilliunits: integer('grid_intake_kg_milliunits'),
+  gridSalesVarianceKgMilliunits: integer('grid_sales_variance_kg_milliunits'),
+  recordedByUserId: text('recorded_by_user_id').notNull().references(() => users.id),
+  notes: text('notes'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+}, (table) => [
+  index('idx_cng_shift_logs_outlet_id').on(table.outletId),
+  index('idx_cng_shift_logs_shift_id').on(table.operationalShiftId),
+]);
+
+export const cngPressureReadings = sqliteTable('cng_pressure_readings', {
+  id: text('id').primaryKey(),
+  operationalShiftId: text('operational_shift_id').notNull().references(() => operationalShifts.id),
+  outletId: text('outlet_id').notNull().references(() => retailOutlets.id),
+  recordedAt: text('recorded_at').notNull(),
+  pressureUnit: text('pressure_unit').notNull(),
+  suctionPressureMilliunits: integer('suction_pressure_milliunits'),
+  dischargePressureMilliunits: integer('discharge_pressure_milliunits'),
+  cascadePressureMilliunits: integer('cascade_pressure_milliunits'),
+  recordedByUserId: text('recorded_by_user_id').notNull().references(() => users.id),
+  notes: text('notes'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+}, (table) => [
+  index('idx_cng_pressure_readings_shift_at').on(table.operationalShiftId, table.recordedAt),
+  index('idx_cng_pressure_readings_outlet_at').on(table.outletId, table.recordedAt),
+]);
+

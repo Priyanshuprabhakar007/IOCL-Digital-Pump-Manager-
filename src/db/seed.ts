@@ -102,6 +102,10 @@ export async function seedDatabase(db: AppDatabase) {
     { id: 'perm-qual-w', code: PERMISSIONS.QUALITY_WRITE, name: 'Write Quality Parameters', description: 'Record fuel receipt density and temperature observations' },
     { id: 'perm-qtol-m', code: PERMISSIONS.QUALITY_TOLERANCE_MANAGE, name: 'Manage Quality Tolerances', description: 'Configure scope-based density and quality tolerance rules' },
     { id: 'perm-srec-r', code: PERMISSIONS.STOCK_RECONCILIATION_READ, name: 'Read Stock Reconciliation', description: 'View shift and product level stock reconciliation summaries' },
+
+    // Phase 3A-1: CNG Operations
+    { id: 'perm-cng-read', code: PERMISSIONS.CNG_OPERATIONS_READ, name: 'Read CNG Operations', description: 'View CNG operational logs and pressure readings' },
+    { id: 'perm-cng-write', code: PERMISSIONS.CNG_OPERATIONS_WRITE, name: 'Write CNG Operations', description: 'Allows creating and managing CNG operational logs and pressure readings' },
   ];
   await db.insert(schema.permissions).values(permissionsList).onConflictDoNothing();
 
@@ -115,6 +119,7 @@ export async function seedDatabase(db: AppDatabase) {
     'perm-d-r', 'perm-a-r',
     'perm-prod-r', 'perm-oprod-r', 'perm-tank-r', 'perm-disp-r', 'perm-nozz-r', 'perm-stm-r', 'perm-shf-r', 'perm-rdg-r',
     'perm-tcal-r', 'perm-tstk-r', 'perm-rcpt-r', 'perm-qual-r', 'perm-qtol-m', 'perm-srec-r',
+    'perm-cng-read',
   ].map(pId => ({ roleId: 'role-so', permissionId: pId }));
 
   const divOfficePerms = [
@@ -123,18 +128,21 @@ export async function seedDatabase(db: AppDatabase) {
     'perm-s-r', 'perm-d-r', 'perm-d-w', 'perm-a-r',
     'perm-prod-r', 'perm-oprod-r', 'perm-tank-r', 'perm-disp-r', 'perm-nozz-r', 'perm-stm-r', 'perm-shf-r', 'perm-rdg-r',
     'perm-tcal-r', 'perm-tstk-r', 'perm-rcpt-r', 'perm-qual-r', 'perm-srec-r',
+    'perm-cng-read',
   ].map(pId => ({ roleId: 'role-do', permissionId: pId }));
 
   const bmPerms = [
     'perm-u-r', 'perm-h-r', 'perm-o-r', 'perm-s-r', 'perm-d-r', 'perm-a-r',
     'perm-prod-r', 'perm-oprod-r', 'perm-tank-r', 'perm-disp-r', 'perm-nozz-r', 'perm-stm-r', 'perm-shf-r', 'perm-rdg-r',
     'perm-tcal-r', 'perm-tstk-r', 'perm-rcpt-r', 'perm-qual-r', 'perm-srec-r',
+    'perm-cng-read',
   ].map(pId => ({ roleId: 'role-bm', permissionId: pId }));
 
   const fieldOfficerPerms = [
     'perm-h-r', 'perm-o-r', 'perm-o-u', 'perm-d-r', 'perm-d-w',
     'perm-prod-r', 'perm-oprod-r', 'perm-tank-r', 'perm-disp-r', 'perm-nozz-r', 'perm-stm-r', 'perm-shf-r', 'perm-rdg-r',
     'perm-tcal-r', 'perm-tstk-r', 'perm-rcpt-r', 'perm-qual-r', 'perm-srec-r',
+    'perm-cng-read',
   ].map(pId => ({ roleId: 'role-fo', permissionId: pId }));
 
   const dealerPerms = [
@@ -151,6 +159,7 @@ export async function seedDatabase(db: AppDatabase) {
     'perm-rcpt-r', 'perm-rcpt-w',
     'perm-qual-r', 'perm-qual-w',
     'perm-srec-r',
+    'perm-cng-read', 'perm-cng-write',
   ].map(pId => ({ roleId: 'role-dealer', permissionId: pId }));
 
   const cspPerms = [
@@ -167,6 +176,7 @@ export async function seedDatabase(db: AppDatabase) {
     'perm-rcpt-r', 'perm-rcpt-w',
     'perm-qual-r', 'perm-qual-w',
     'perm-srec-r',
+    'perm-cng-read', 'perm-cng-write',
   ].map(pId => ({ roleId: 'role-csp', permissionId: pId }));
 
   await db.insert(schema.rolePermissions).values([

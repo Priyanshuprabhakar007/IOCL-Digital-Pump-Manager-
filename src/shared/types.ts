@@ -858,3 +858,58 @@ export interface ShiftStockSummary {
     varianceStatus: VarianceStatus | null;
   }>;
 }
+
+// ==========================================
+// Phase 3A-1: CNG Operations Types
+// ==========================================
+
+export interface CngShiftLog {
+  id: string;
+  operationalShiftId: string;
+  outletId: string;
+  mfmOpeningKgMilliunits: number;
+  mfmClosingKgMilliunits: number;
+  netSalesKgMilliunits: number;
+  gridIntakeKgMilliunits: number | null;
+  gridSalesVarianceKgMilliunits: number | null;
+  mfmOpeningKg: string;
+  mfmClosingKg: string;
+  netSalesKg: string;
+  gridIntakeKg: string | null;
+  gridSalesVarianceKg: string | null;
+  recordedByUserId: string;
+  notes: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CngPressureReading {
+  id: string;
+  operationalShiftId: string;
+  outletId: string;
+  recordedAt: string;
+  pressureUnit: string;
+  suctionPressureMilliunits: number | null;
+  dischargePressureMilliunits: number | null;
+  cascadePressureMilliunits: number | null;
+  suctionPressure: string | null;
+  dischargePressure: string | null;
+  cascadePressure: string | null;
+  recordedByUserId: string;
+  notes: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CngDailySummary {
+  outletId: string;
+  businessDate: string;
+  totalMfmSalesKgMilliunits: number;
+  totalMfmSalesKg: string;
+  gridIntakeKgMilliunits: number | null;
+  gridIntakeKg: string | null;
+  gridSalesVarianceKgMilliunits: number | null;
+  gridSalesVarianceKg: string | null;
+  shiftCount: number;
+  gridDataComplete: boolean;
+}
