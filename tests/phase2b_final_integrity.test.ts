@@ -204,7 +204,8 @@ describe('Phase 2B Final Integrity Suite', () => {
     const closeRes = await app.fetch(
       new Request(`http://localhost/api/v1/shifts/${shiftId}/close`, {
         method: 'POST',
-        headers: { Cookie: cookie, Origin: 'http://localhost:3000' },
+        headers: { 'Content-Type': 'application/json', Cookie: cookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({ varianceReason: 'Phase 2B compatibility test variance' }),
       }),
       env
     );
