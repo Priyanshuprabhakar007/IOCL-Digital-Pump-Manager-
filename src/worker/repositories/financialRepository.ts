@@ -197,11 +197,6 @@ export class FinancialRepository {
   }
 
   async deleteCollection(id: string): Promise<{ success: boolean; reason?: 'NOT_FOUND' | 'SHIFT_CLOSED' }> {
-    const existing = await this.findCollectionById(id);
-    if (!existing) {
-      return { success: false, reason: 'NOT_FOUND' };
-    }
-
     const deleted = await this.db.all<{ id: string }>(
       sql`DELETE FROM shift_collections
           WHERE id = ${id}
@@ -209,11 +204,17 @@ export class FinancialRepository {
           RETURNING id`
     );
 
-    if (!deleted || deleted.length === 0) {
-      return { success: false, reason: 'SHIFT_CLOSED' };
+    if (deleted && deleted.length > 0) {
+      return { success: true };
     }
 
-    return { success: true };
+    // It was not deleted, either it doesn't exist or shift is closed
+    const col = await this.findCollectionById(id);
+    if (!col) {
+      return { success: false, reason: 'NOT_FOUND' };
+    }
+    
+    return { success: false, reason: 'SHIFT_CLOSED' };
   }
 
   // ==========================================

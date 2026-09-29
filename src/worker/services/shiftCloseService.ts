@@ -112,6 +112,7 @@ export class ShiftCloseService {
     if (!finalizeRes.success || !finalizeRes.shift) {
       await this.pumpRepo.restoreOpenFromClosing(shiftId);
       await this.financialRepo.deleteFinancialReconciliation(shiftId);
+      await this.pumpRepo.deleteStockReconciliation(shiftId);
       return {
         success: false,
         shift: await this.pumpRepo.findOperationalShiftById(shiftId),
