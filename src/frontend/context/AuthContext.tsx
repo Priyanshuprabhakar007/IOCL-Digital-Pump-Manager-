@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { UserContext, RoleCode, PermissionCode } from '../../shared/types';
-import { apiFetch } from '../services/api';
+import { apiFetch, setAuthToken } from '../services/api';
 
 interface AuthContextType {
   userCtx: UserContext | null;
@@ -50,6 +50,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       };
     }
 
+    if (res.data?.token) {
+      setAuthToken(res.data.token);
+    }
+
     const meSuccess = await fetchMe();
     if (!meSuccess) {
       return {
@@ -67,6 +71,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const logout = async () => {
     await apiFetch('/api/v1/auth/logout', { method: 'POST' });
+    setAuthToken(null);
     setUserCtx(null);
   };
 

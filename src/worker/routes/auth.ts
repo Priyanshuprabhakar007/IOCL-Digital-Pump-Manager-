@@ -150,12 +150,16 @@ auth.post('/login', async (c) => {
     createdAt: nowIso,
   });
 
-  // Set HttpOnly Cookie (secure: true only in production to allow local HTTP development)
+  // Set HttpOnly Cookie (secure: true and sameSite: 'None' in production or https for iframes)
+  const reqProto = c.req.header('x-forwarded-proto') || '';
+  const isHttps = reqProto === 'https' || c.req.url.startsWith('https://');
   const isProduction = c.env?.ENVIRONMENT === 'production';
+  const useSecure = isHttps || isProduction;
+
   setCookie(c, COOKIE_NAME, rawToken, {
     httpOnly: true,
-    secure: isProduction,
-    sameSite: 'Lax',
+    secure: useSecure,
+    sameSite: useSecure ? 'None' : 'Lax',
     path: '/',
     maxAge: SESSION_DURATION_HOURS * 3600,
   });
@@ -168,6 +172,7 @@ auth.post('/login', async (c) => {
   return c.json({
     success: true,
     data: {
+      token: rawToken,
       user: authUser.user,
       roles,
       permissions,
@@ -202,11 +207,15 @@ auth.post('/logout', requireAuth as any, async (c: AppContext) => {
     });
   }
 
+  const reqProto = c.req.header('x-forwarded-proto') || '';
+  const isHttps = reqProto === 'https' || c.req.url.startsWith('https://');
   const isProduction = c.env?.ENVIRONMENT === 'production';
+  const useSecure = isHttps || isProduction;
+
   deleteCookie(c, COOKIE_NAME, {
     path: '/',
-    secure: isProduction,
-    sameSite: 'Lax',
+    secure: useSecure,
+    sameSite: useSecure ? 'None' : 'Lax',
   });
 
   return c.json({

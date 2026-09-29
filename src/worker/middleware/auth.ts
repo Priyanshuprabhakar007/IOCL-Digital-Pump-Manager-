@@ -31,7 +31,9 @@ export type AppContext = Context<{
 }>;
 
 export async function requireAuth(c: AppContext, next: Next) {
-  const sessionToken = getCookie(c, COOKIE_NAME);
+  const authHeader = c.req.header('authorization');
+  const bearerToken = authHeader?.startsWith('Bearer ') ? authHeader.substring(7).trim() : null;
+  const sessionToken = getCookie(c, COOKIE_NAME) || bearerToken;
   if (!sessionToken) {
     return c.json({
       success: false,

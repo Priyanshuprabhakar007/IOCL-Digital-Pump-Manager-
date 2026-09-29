@@ -43,8 +43,8 @@ async function startServer() {
   server.use(async (req, res, next) => {
     if (req.url.startsWith('/api')) {
       try {
-        const protocol = req.protocol || 'http';
-        const host = req.get('host') || 'localhost:3000';
+        const protocol = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'http';
+        const host = (req.headers['x-forwarded-host'] as string) || req.get('host') || 'localhost:3000';
         const fullUrl = `${protocol}://${host}${req.originalUrl || req.url}`;
 
         const headers = new Headers();
@@ -71,18 +71,57 @@ async function startServer() {
           body: body && body.length > 0 ? (body as unknown as BodyInit) : undefined,
         });
 
+        const configured = (process.env.ALLOWED_ORIGINS || '')
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean);
+
+        const currentOrigin = `${protocol}://${host}`;
+        const originsSet = new Set([
+          'http://localhost:3000',
+          'http://127.0.0.1:3000',
+          'http://localhost',
+          currentOrigin,
+          ...configured,
+        ]);
+
+        const originHeader = req.headers.origin;
+        if (originHeader) {
+          try {
+            const reqOriginHost = new URL(originHeader).host;
+            const currentHost = host.split(':')[0];
+            if (
+              reqOriginHost === host ||
+              reqOriginHost.split(':')[0] === currentHost ||
+              reqOriginHost.endsWith('.run.app') ||
+              reqOriginHost === 'localhost' ||
+              reqOriginHost === '127.0.0.1'
+            ) {
+              originsSet.add(originHeader);
+            }
+          } catch {}
+        }
+
         const webRes = await app.fetch(webReq, {
           DB: localDb,
           DOCUMENTS_BUCKET: localR2 as any,
           ENVIRONMENT: process.env.ENVIRONMENT || 'development',
-          ALLOWED_ORIGINS:
-            process.env.ALLOWED_ORIGINS ||
-            'http://localhost:3000,http://127.0.0.1:3000',
+          ALLOWED_ORIGINS: Array.from(originsSet).join(','),
         });
 
         res.status(webRes.status);
+
+        if (typeof webRes.headers.getSetCookie === 'function') {
+          const cookies = webRes.headers.getSetCookie();
+          if (cookies && cookies.length > 0) {
+            res.setHeader('set-cookie', cookies);
+          }
+        }
+
         webRes.headers.forEach((value, key) => {
-          res.setHeader(key, value);
+          if (key.toLowerCase() !== 'set-cookie') {
+            res.setHeader(key, value);
+          }
         });
 
         const arrayBuffer = await webRes.arrayBuffer();
