@@ -675,6 +675,8 @@ export interface ShiftFinancialSummary {
     cngTotalStr: string | null;
     lubeTotalPaise: number | null;
     lubeTotalStr: string | null;
+    cngApplicable: boolean;
+    cngComplete: boolean;
     includedComponents: string[];
     pendingComponents: string[];
     authoritativeTotalPaise: number;

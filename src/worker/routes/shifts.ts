@@ -236,6 +236,8 @@ shifts.post('/shifts/:shiftId/close', requirePermission(PERMISSIONS.SHIFTS_CLOSE
     if (errCode === 'PRICE_SNAPSHOT_MISSING') statusCode = 400;
     if (errCode === 'FINANCIAL_AMOUNT_OVERFLOW') statusCode = 400;
     if (errCode === 'INCOMPLETE_CNG_DATA') statusCode = 409;
+    if (errCode === 'CNG_PRICE_SNAPSHOT_UNAVAILABLE') statusCode = 409;
+    if (errCode === 'CNG_PRICE_SNAPSHOT_AMBIGUOUS') statusCode = 409;
 
     return c.json({
       success: false,

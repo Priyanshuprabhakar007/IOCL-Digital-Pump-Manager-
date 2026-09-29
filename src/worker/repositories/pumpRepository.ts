@@ -705,11 +705,8 @@ export class PumpRepository {
         )
       );
 
-    // 1c. Resolve applicable product prices for products in the nozzle snapshot
-    const productIds = Array.from(new Set(activeParticipatingNozzles.map(n => n.product.id)));
-
-    // 1d. Resolve active CNG/KG product if available
-    const [cngProduct] = await this.db
+    // 1c. Resolve active CNG/KG products with ambiguity check before price lookup
+    const activeCngProducts = await this.db
       .select({ product: schema.products, outletProduct: schema.outletProducts })
       .from(schema.outletProducts)
       .innerJoin(schema.products, eq(schema.outletProducts.productId, schema.products.id))
@@ -722,10 +719,30 @@ export class PumpRepository {
           eq(schema.products.unit, 'KG')
         )
       );
-    
-    if (cngProduct) {
-      productIds.push(cngProduct.product.id);
+
+    if (activeCngProducts.length > 1) {
+      return {
+        success: false,
+        shift: null,
+        snapshotsCount: 0,
+        error: 'AMBIGUOUS_CNG_PRODUCT_CONFIGURATION',
+        message: 'Outlet has more than one active CNG/KG product configured.',
+      };
     }
+
+    const cngProduct = activeCngProducts.length === 1 ? activeCngProducts[0].product : null;
+
+    // 1d. Build unified priced product set (unique nozzle products + CNG product if present)
+    const fuelProducts = activeParticipatingNozzles.map(n => n.product);
+    const uniqueFuelProducts = Array.from(new Set(fuelProducts.map(p => p.id)))
+      .map(id => fuelProducts.find(p => p.id === id)!);
+
+    const pricedProducts = [
+      ...uniqueFuelProducts,
+      ...(cngProduct ? [cngProduct] : [])
+    ];
+
+    const productIds = pricedProducts.map(p => p.id);
 
     const prices = await this.db
       .select()
@@ -757,30 +774,18 @@ export class PumpRepository {
         message: 'One or more products in this shift do not have a configured active price for the business date.',
       };
     }
-    
-    // Check for CNG ambiguity: If outlet has > 1 active CNG product mapped
-    const activeCngProducts = await this.db
-      .select({ count: sql<number>`count(*)` })
-      .from(schema.outletProducts)
-      .innerJoin(schema.products, eq(schema.outletProducts.productId, schema.products.id))
-      .where(
-        and(
-          eq(schema.outletProducts.outletId, data.outletId),
-          eq(schema.outletProducts.status, 'ACTIVE'),
-          eq(schema.products.status, 'ACTIVE'),
-          eq(schema.products.category, 'CNG'),
-          eq(schema.products.unit, 'KG')
-        )
-      );
 
-    if (activeCngProducts[0].count > 1) {
+    for (const p of pricedProducts) {
+      const pr = resolvedPrices.get(p.id);
+      if (!pr || pr.pricePaisePerUnit <= 0) {
         return {
-        success: false,
-        shift: null,
-        snapshotsCount: 0,
-        error: 'AMBIGUOUS_CNG_PRODUCT_CONFIGURATION',
-        message: 'Outlet has more than one active CNG/KG product configured.',
-      };
+          success: false,
+          shift: null,
+          snapshotsCount: 0,
+          error: 'PRODUCT_PRICE_NOT_CONFIGURED',
+          message: 'Price must be greater than 0.',
+        };
+      }
     }
 
 
@@ -848,22 +853,22 @@ export class PumpRepository {
       createdAt: data.createdAt,
     }));
 
-    const priceSnapshotRows = activeParticipatingNozzles.map(n => {
-      const p = resolvedPrices.get(n.product.id)!;
+    const priceSnapshotRows = pricedProducts.map(p => {
+      const pr = resolvedPrices.get(p.id)!;
       return {
         id: `ospp-${crypto.randomUUID()}`,
         operationalShiftId: data.id,
         outletId: data.outletId,
-        productId: n.product.id,
-        productCode: n.product.code,
-        productName: n.product.name,
-        unit: n.product.unit,
-        productCategory: n.product.category,
-        pricePaisePerUnit: p.pricePaisePerUnit,
-        sourcePriceId: p.id,
+        productId: p.id,
+        productCode: p.code,
+        productName: p.name,
+        unit: p.unit,
+        productCategory: p.category,
+        pricePaisePerUnit: pr.pricePaisePerUnit,
+        sourcePriceId: pr.id,
         createdAt: data.createdAt,
       };
-    }).filter((v, i, a) => a.findIndex(t => t.productId === v.productId) === i);
+    });
 
     const nozzleSnapshotInsert = this.db.insert(schema.operationalShiftNozzles).values(snapshotRows);
     const priceSnapshotInsert = this.db.insert(schema.operationalShiftProductPrices).values(priceSnapshotRows);

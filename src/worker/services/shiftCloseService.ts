@@ -95,6 +95,15 @@ export class ShiftCloseService {
       await this.financialService.performFinancialReconciliation(shiftId, varianceReason, true);
     } catch (err: any) {
       const msg = err?.message || err;
+      if (msg === 'INCOMPLETE_CNG_DATA') {
+        return abortAndRestore('INCOMPLETE_CNG_DATA', 'CNG MFM shift data must be completed before closing this shift.');
+      }
+      if (msg === 'CNG_PRICE_SNAPSHOT_UNAVAILABLE') {
+        return abortAndRestore('CNG_PRICE_SNAPSHOT_UNAVAILABLE', 'CNG historical price snapshot unavailable');
+      }
+      if (msg === 'CNG_PRICE_SNAPSHOT_AMBIGUOUS') {
+        return abortAndRestore('CNG_PRICE_SNAPSHOT_AMBIGUOUS', 'Multiple CNG historical price snapshots found');
+      }
       if (msg === 'VARIANCE_REASON_REQUIRED') {
         return abortAndRestore('VARIANCE_REASON_REQUIRED', 'Non-zero variance requires a reason');
       }
@@ -148,6 +157,8 @@ export class ShiftCloseService {
         entityId: shiftId,
         newValue: {
           fuelRevenuePaise: recon.fuelSalesRevenuePaise,
+          cngRevenuePaise: recon.cngSalesRevenuePaise,
+          authoritativeSalesRevenuePaise: recon.authoritativeSalesRevenuePaise,
           totalCollectionsPaise: recon.totalCollectionsPaise,
           variancePaise: recon.salesCollectionVariancePaise,
           varianceStatus: recon.varianceStatus,

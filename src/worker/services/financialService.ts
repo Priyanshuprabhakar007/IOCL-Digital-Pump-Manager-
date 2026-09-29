@@ -101,16 +101,23 @@ export class FinancialService {
 
     const cngLog = await this.cngRepo.findShiftLog(shiftId);
     const priceSnapshots = await this.financialRepo.listShiftProductPrices(shiftId);
-    const cngPriceSnapshots = priceSnapshots.filter(p => p.productCategory === 'CNG');
+    
+    // Strict classification: productCategory === 'CNG' && unit === 'KG' && pricePaisePerUnit > 0
+    const validCngSnapshots = priceSnapshots.filter(
+      p => p.productCategory === 'CNG' && p.unit === 'KG' && p.pricePaisePerUnit > 0
+    );
 
-    if (cngPriceSnapshots.length === 0) {
+    if (validCngSnapshots.length === 0) {
+      if (cngLog) {
+        throw new Error('CNG_PRICE_SNAPSHOT_UNAVAILABLE');
+      }
       return { cngApplicable: false, cngComplete: true, cngTotalPaise: null, cngTotalStr: null, cngProduct: null };
     }
-    if (cngPriceSnapshots.length > 1) {
+    if (validCngSnapshots.length > 1) {
       throw new Error('CNG_PRICE_SNAPSHOT_AMBIGUOUS');
     }
 
-    const priceSnapshot = cngPriceSnapshots[0];
+    const priceSnapshot = validCngSnapshots[0];
     if (!cngLog) {
       return { cngApplicable: true, cngComplete: false, cngTotalPaise: null, cngTotalStr: null, cngProduct: null };
     }
@@ -220,6 +227,8 @@ export class FinancialService {
         cngTotalStr: cngRevenue.cngTotalStr,
         lubeTotalPaise: null,
         lubeTotalStr: null,
+        cngApplicable: cngRevenue.cngApplicable,
+        cngComplete: cngRevenue.cngComplete,
         includedComponents: includedComponents as any,
         pendingComponents: pendingComponents as any,
         authoritativeTotalPaise: authoritativeTotalPaise,
@@ -285,10 +294,8 @@ export class FinancialService {
   ): Promise<ShiftFinancialReconciliation> {
     const summary = await this.getShiftFinancialSummary(shiftId);
 
-    // CNG Completeness Check
-    const cngApplicable = summary.salesRevenue.includedComponents.includes('CNG') || 
-                          summary.salesRevenue.pendingComponents.includes('CNG');
-    if (cngApplicable && !summary.salesRevenue.includedComponents.includes('CNG')) {
+    const cngRevenue = await this.calculateShiftCngRevenue(shiftId);
+    if (cngRevenue.cngApplicable && !cngRevenue.cngComplete) {
       throw new Error('INCOMPLETE_CNG_DATA');
     }
 
@@ -304,7 +311,7 @@ export class FinancialService {
       operationalShiftId: shiftId,
       outletId: summary.outletId,
       fuelSalesRevenuePaise: summary.salesRevenue.fuelTotalPaise,
-      cngSalesRevenuePaise: summary.salesRevenue.cngTotalPaise,
+      cngSalesRevenuePaise: cngRevenue.cngApplicable ? cngRevenue.cngTotalPaise : null,
       lubeSalesRevenuePaise: null,
       authoritativeSalesRevenuePaise: summary.salesRevenue.authoritativeTotalPaise,
       cashCollectionPaise: summary.collections.cashPaise,

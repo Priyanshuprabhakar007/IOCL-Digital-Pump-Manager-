@@ -72,7 +72,15 @@ export async function requireAuth(c: AppContext, next: Next) {
   const lastSeenMs = new Date(session.lastSeenAt).getTime();
   const nowMs = new Date(nowIso).getTime();
   if (nowMs - lastSeenMs > 15 * 60 * 1000) {
-    c.executionCtx?.waitUntil(sessionRepo.updateLastSeen(session.id, nowIso));
+    try {
+      if (c.executionCtx && typeof c.executionCtx.waitUntil === 'function') {
+        c.executionCtx.waitUntil(sessionRepo.updateLastSeen(session.id, nowIso));
+      } else {
+        sessionRepo.updateLastSeen(session.id, nowIso).catch(() => {});
+      }
+    } catch {
+      sessionRepo.updateLastSeen(session.id, nowIso).catch(() => {});
+    }
   }
 
   const roles = await userRepo.getUserRoles(user.id);

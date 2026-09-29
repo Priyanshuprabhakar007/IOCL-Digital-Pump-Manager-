@@ -874,8 +874,18 @@ financialRoutes.get('/shifts/:shiftId/financial-summary', requirePermission(PERM
     const summary = await service.getShiftFinancialSummary(shiftId);
     return c.json({ success: true, data: summary });
   } catch (err: any) {
-    if (err.message === 'FINANCIAL_PRICE_SNAPSHOT_UNAVAILABLE') {
-       return c.json({ success: false, error: { code: 'PRICE_SNAPSHOT_MISSING', message: 'This is a legacy shift without a historical price snapshot' } }, 400);
+    const msg = err?.message || err;
+    if (msg === 'CNG_PRICE_SNAPSHOT_UNAVAILABLE') {
+       return c.json({ success: false, error: { code: 'CNG_PRICE_SNAPSHOT_UNAVAILABLE', message: 'CNG historical price snapshot unavailable' } }, 409);
+    }
+    if (msg === 'CNG_PRICE_SNAPSHOT_AMBIGUOUS') {
+       return c.json({ success: false, error: { code: 'CNG_PRICE_SNAPSHOT_AMBIGUOUS', message: 'Multiple CNG historical price snapshots found' } }, 409);
+    }
+    if (msg === 'FINANCIAL_AMOUNT_OVERFLOW') {
+       return c.json({ success: false, error: { code: 'FINANCIAL_AMOUNT_OVERFLOW', message: 'Financial amount overflow' } }, 400);
+    }
+    if (msg === 'FINANCIAL_PRICE_SNAPSHOT_UNAVAILABLE') {
+       return c.json({ success: false, error: { code: 'PRICE_SNAPSHOT_MISSING', message: 'Historical price snapshot unavailable' } }, 400);
     }
     throw err;
   }
