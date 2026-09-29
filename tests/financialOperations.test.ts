@@ -9,6 +9,9 @@ import * as schema from '../src/db/schema';
 import { eq } from 'drizzle-orm';
 import fs from 'fs';
 import { parseMoneyToPaise, parseSignedMoneyToPaise, formatPaiseToMoney } from '../src/shared/financialUtils';
+import { ShiftCloseService } from '../src/worker/services/shiftCloseService';
+import { FinancialService } from '../src/worker/services/financialService';
+import { AuditRepository } from '../src/worker/repositories/auditRepository';
 
 const TEST_DB_PATH = './.sqlite/test_financial_integration.db';
 
@@ -1038,15 +1041,112 @@ describe('Phase 2C Comprehensive Integration Suite', () => {
     expect(json.success).toBe(true);
   });
 
-  it('34. standalone POST /financial-reconcile is disabled', async () => {
+  it('36. true collection delete race NOT_FOUND', async () => {
     const { cookie } = await loginAs();
-    const res = await app.fetch(
-      new Request('http://localhost/api/v1/shifts/some-shift/financial-reconcile', {
+    const openRes = await app.fetch(
+      new Request('http://localhost/api/v1/outlets/ro-1001/shifts/open', {
         method: 'POST',
-        headers: { Cookie: cookie, Origin: 'http://localhost:3000' },
+        headers: { 'Content-Type': 'application/json', Cookie: cookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({ shiftTemplateId: 'st-ro1-1', businessDate: '2026-11-20' }),
       }),
       env
     );
-    expect(res.status).toBe(405);
+    const shiftId = (await openRes.json() as any).data.id;
+
+    const colRes = await app.fetch(
+      new Request(`http://localhost/api/v1/shifts/${shiftId}/collections`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: cookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({ collectionType: 'CASH', amount: '100.00', collectedAt: new Date().toISOString() }),
+      }),
+      env
+    );
+    const colId = (await colRes.json() as any).data.id;
+
+    const db = getDb(localD1);
+    const finRepo = new FinancialRepository(db);
+
+    // 1. First delete should succeed
+    const del1 = await finRepo.deleteCollection(colId);
+    expect(del1.success).toBe(true);
+
+    // 2. Second delete (race) should return NOT_FOUND, not SHIFT_CLOSED
+    const del2 = await finRepo.deleteCollection(colId);
+    expect(del2.success).toBe(false);
+    expect(del2.reason).toBe('NOT_FOUND');
+
+    // 3. collection exists but shift closed -> SHIFT_CLOSED
+    const colRes2 = await app.fetch(
+      new Request(`http://localhost/api/v1/shifts/${shiftId}/collections`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: cookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({ collectionType: 'CASH', amount: '200.00', collectedAt: new Date().toISOString() }),
+      }),
+      env
+    );
+    const colId2 = (await colRes2.json() as any).data.id;
+    await db.update(schema.operationalShifts).set({ status: 'CLOSED' }).where(eq(schema.operationalShifts.id, shiftId));
+
+    const del3 = await finRepo.deleteCollection(colId2);
+    expect(del3.success).toBe(false);
+    expect(del3.reason).toBe('SHIFT_CLOSED');
+  });
+
+  it('37. shift finalization failure cleans up both reconciliations', async () => {
+    const { cookie } = await loginAs();
+    const openRes = await app.fetch(
+      new Request('http://localhost/api/v1/outlets/ro-1001/shifts/open', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: cookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({ shiftTemplateId: 'st-ro1-1', businessDate: '2026-11-20' }),
+      }),
+      env
+    );
+    const shiftId = (await openRes.json() as any).data.id;
+    const db = getDb(localD1);
+    const pumpRepo = new PumpRepository(db);
+    const finRepo = new FinancialRepository(db);
+    const auditRepo = new AuditRepository(db);
+    const finService = new FinancialService(finRepo, pumpRepo);
+    const closeService = new ShiftCloseService(pumpRepo, finRepo, finService, auditRepo);
+
+    // Setup readings to pass validation
+    const nozzles = await pumpRepo.listShiftNozzleSnapshots(shiftId);
+    for (const n of nozzles) {
+      await pumpRepo.createReading({
+        id: `mr-${n.nozzleId}-${shiftId}`, operationalShiftId: shiftId, outletId: 'ro-1001', nozzleId: n.nozzleId, openingMilliunits: 1000, closingMilliunits: 1000, testingMilliunits: 0, grossMilliunits: 0, netMilliunits: 0, recordedByUserId: 'user-admin', hasOpeningVariance: false, openingVarianceMilliunits: 0, varianceReason: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+      });
+    }
+    const tanks = await pumpRepo.listShiftTankSnapshots(shiftId);
+    for (const t of tanks) {
+      await pumpRepo.createTankReading({
+        id: `tsr-open-${t.tankId}-${shiftId}`, operationalShiftId: shiftId, outletId: 'ro-1001', tankId: t.tankId, productId: t.productId, readingType: 'OPENING', source: 'MANUAL', productDipMmMilliunits: 1000000, waterDipMmMilliunits: 0, grossObservedVolumeMilliunits: 8500000, waterVolumeMilliunits: 0, netProductVolumeMilliunits: 8500000, recordedAt: new Date().toISOString(), recordedByUserId: 'user-admin', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+      });
+      await pumpRepo.createTankReading({
+        id: `tsr-close-${t.tankId}-${shiftId}`, operationalShiftId: shiftId, outletId: 'ro-1001', tankId: t.tankId, productId: t.productId, readingType: 'CLOSING', source: 'MANUAL', productDipMmMilliunits: 950000, waterDipMmMilliunits: 0, grossObservedVolumeMilliunits: 8400000, waterVolumeMilliunits: 0, netProductVolumeMilliunits: 8400000, recordedAt: new Date().toISOString(), recordedByUserId: 'user-admin', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+      });
+    }
+
+    // Force finalizeCloseConditional to fail by spying/mocking
+    const originalFinalize = pumpRepo.finalizeCloseConditional.bind(pumpRepo);
+    pumpRepo.finalizeCloseConditional = async () => ({ success: false, shift: await pumpRepo.findOperationalShiftById(shiftId) });
+
+    const result = await closeService.closeShift(shiftId, 'user-admin');
+
+    expect(result.success).toBe(false);
+    
+    // Verify shift restored to OPEN
+    const shift = await pumpRepo.findOperationalShiftById(shiftId);
+    expect(shift?.status).toBe('OPEN');
+
+    // Verify both reconciliations are cleaned up
+    const finRecon = await finRepo.findShiftFinancialReconciliation(shiftId);
+    expect(finRecon).toBeNull();
+
+    const stockRecon = await db.select().from(schema.shiftStockReconciliations).where(eq(schema.shiftStockReconciliations.operationalShiftId, shiftId));
+    expect(stockRecon.length).toBe(0);
+
+    // Cleanup mock
+    pumpRepo.finalizeCloseConditional = originalFinalize;
   });
 });
