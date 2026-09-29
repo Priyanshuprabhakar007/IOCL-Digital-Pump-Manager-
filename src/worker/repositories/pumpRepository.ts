@@ -1072,6 +1072,37 @@ export class PumpRepository {
     return { success: true, shift, alreadyClosed: false };
   }
 
+  async beginCloseConditional(shiftId: string): Promise<{ success: boolean; shift: OperationalShift | null }> {
+    const nowIso = new Date().toISOString();
+    const res = await this.db.all<{ id: string }>(
+      sql`UPDATE operational_shifts
+          SET status = 'CLOSING', updated_at = ${nowIso}
+          WHERE id = ${shiftId} AND status = 'OPEN'
+          RETURNING id`
+    );
+    const shift = await this.findOperationalShiftById(shiftId);
+    return { success: Boolean(res && res.length > 0), shift };
+  }
+
+  async restoreOpenFromClosing(shiftId: string): Promise<void> {
+    const nowIso = new Date().toISOString();
+    await this.db.run(
+      sql`UPDATE operational_shifts SET status = 'OPEN', updated_at = ${nowIso} WHERE id = ${shiftId} AND status = 'CLOSING'`
+    );
+  }
+
+  async finalizeCloseConditional(shiftId: string, closedByUserId: string): Promise<{ success: boolean; shift: OperationalShift | null }> {
+    const nowIso = new Date().toISOString();
+    const res = await this.db.all<{ id: string }>(
+      sql`UPDATE operational_shifts 
+          SET status = 'CLOSED', closed_at = ${nowIso}, closed_by_user_id = ${closedByUserId}, updated_at = ${nowIso} 
+          WHERE id = ${shiftId} AND status = 'CLOSING' 
+          RETURNING id`
+    );
+    const shift = await this.findOperationalShiftById(shiftId);
+    return { success: Boolean(res && res.length > 0), shift };
+  }
+
   // ==========================================
   // 8. NOZZLE METER READINGS & CONTINUITY
   // ==========================================

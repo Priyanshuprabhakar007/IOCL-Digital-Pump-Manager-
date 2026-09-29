@@ -15,6 +15,7 @@ import { PERMISSIONS } from '../../shared/constants';
 import { parseMilliunits, formatMilliunits } from '../../shared/precision';
 import { FinancialRepository } from '../repositories/financialRepository';
 import { FinancialService } from '../services/financialService';
+import { ShiftCloseService } from '../services/shiftCloseService';
 
 export const shifts = new Hono<{ Bindings: EnvBindings }>();
 
@@ -183,7 +184,7 @@ shifts.get('/shifts/:shiftId', requirePermission(PERMISSIONS.SHIFTS_READ) as any
   return c.json({ success: true, data: shift, error: null });
 });
 
-// POST /api/v1/shifts/:shiftId/close - Transactionally close operational shift with completeness validation
+// POST /api/v1/shifts/:shiftId/close - Transactionally close operational shift with centralized orchestration
 shifts.post('/shifts/:shiftId/close', requirePermission(PERMISSIONS.SHIFTS_CLOSE) as any, async (c: AppContext) => {
   const shiftId = c.req.param('shiftId');
   if (!shiftId) return c.json({ success: false, data: null, error: { code: 'BAD_REQUEST', message: 'shiftId is required' } }, 400);
@@ -210,110 +211,37 @@ shifts.post('/shifts/:shiftId/close', requirePermission(PERMISSIONS.SHIFTS_CLOSE
     }, 409);
   }
 
-  // 1. Tank Stock & Receipts Completeness Check
-  const tankCheck = await pumpRepo.validateShiftCompleteness(shiftId);
-  if (!tankCheck.valid) {
-    return c.json({
-      success: false,
-      data: null,
-      error: {
-        code: tankCheck.error || 'INCOMPLETE_TANK_STOCK_DATA',
-        message: tankCheck.message || 'Tank stock data is incomplete',
-        details: tankCheck.details || null,
-      },
-    }, 400);
-  }
-
-  // 2. Nozzle Meter Readings Completeness Check
-  const snapshots = await pumpRepo.listShiftNozzleSnapshots(shiftId);
-  const readings = await pumpRepo.listReadingsForShift(shiftId);
-  const unavails = await pumpRepo.listUnavailabilityForShift(shiftId);
-
-  const coveredNozzleIds = new Set<string>();
-  readings.forEach(r => coveredNozzleIds.add(r.nozzleId));
-  unavails.forEach(u => coveredNozzleIds.add(u.nozzleId));
-
-  const missingSnapshots = snapshots.filter(s => !coveredNozzleIds.has(s.nozzleId));
-
-  if (missingSnapshots.length > 0) {
-    const missingDescriptions = missingSnapshots.map(
-      s => `Dispenser #${s.dispenserNumber} - Nozzle #${s.nozzleNumber} (${s.productName || s.productCode})`
-    );
-
-    return c.json({
-      success: false,
-      data: null,
-      error: {
-        code: 'INCOMPLETE_SHIFT_READINGS',
-        message: `Cannot close shift. ${missingSnapshots.length} active nozzle(s) have neither a meter reading nor an approved unavailability record.`,
-        details: {
-          missingCount: missingSnapshots.length,
-          missingNozzles: missingDescriptions,
-        },
-      },
-    }, 400);
-  }
-
-  // 3. Financial Reconciliation
-  const financialRepo = new FinancialRepository(db);
-  const financialService = new FinancialService(financialRepo, pumpRepo);
   const body = await c.req.json().catch(() => ({}));
   const varianceReason = body.varianceReason;
 
-  try {
-    await financialService.performFinancialReconciliation(shiftId, varianceReason);
-  } catch (err: any) {
-    if (err.message === 'VARIANCE_REASON_REQUIRED') {
-      return c.json({
-        success: false,
-        data: null,
-        error: { code: 'VARIANCE_REASON_REQUIRED', message: 'Non-zero variance requires a reason' },
-      }, 400);
-    }
-    if (err.message === 'FINANCIAL_PRICE_SNAPSHOT_UNAVAILABLE') {
-      return c.json({
-        success: false,
-        data: null,
-        error: { code: 'PRICE_SNAPSHOT_MISSING', message: 'Historical price snapshot unavailable' },
-      }, 400);
-    }
-    throw err;
-  }
+  const financialRepo = new FinancialRepository(db);
+  const financialService = new FinancialService(financialRepo, pumpRepo);
+  const shiftCloseService = new ShiftCloseService(pumpRepo, financialRepo, financialService, auditRepo);
 
-  // Concurrent immutability safe conditional close
-  const closeRes = await pumpRepo.closeOperationalShiftConditional(shiftId, c.var.user!.user.id);
+  const closeRes = await shiftCloseService.closeShift(
+    shiftId,
+    c.var.user!.user.id,
+    varianceReason,
+    c.req.header('cf-connecting-ip'),
+    c.req.header('user-agent')
+  );
+
   if (!closeRes.success) {
-    if (closeRes.alreadyClosed) {
-      return c.json({
-        success: false,
-        data: null,
-        error: { code: 'SHIFT_CLOSED', message: 'Operational shift was closed concurrently.' },
-      }, 409);
-    }
-    const statusCode = (closeRes.error === 'INCOMPLETE_TANK_STOCK_DATA' || closeRes.error === 'INCOMPLETE_RECEIPTS') ? 400 : 404;
+    const errCode = closeRes.error || 'CLOSE_FAILED';
+    let statusCode = 400;
+    if (errCode === 'SHIFT_CLOSED_OR_CLOSING') statusCode = 409;
+    if (errCode === 'VARIANCE_REASON_REQUIRED') statusCode = 400;
+    if (errCode === 'PRICE_SNAPSHOT_MISSING') statusCode = 400;
+    if (errCode === 'FINANCIAL_AMOUNT_OVERFLOW') statusCode = 400;
+
     return c.json({
       success: false,
       data: null,
-      error: { code: closeRes.error || 'NOT_FOUND', message: closeRes.message || 'Operational shift not found or invalid' },
+      error: { code: errCode, message: closeRes.message || 'Failed to close shift', details: closeRes.details || null }
     }, statusCode as any);
   }
 
-  const closed = closeRes.shift!;
-
-  await auditRepo.logAction({
-    id: `aud-${crypto.randomUUID()}`,
-    userId: c.var.user!.user.id,
-    action: 'SHIFT_CLOSE',
-    entityType: 'OPERATIONAL_SHIFT',
-    entityId: shiftId,
-    oldValue: { status: shift.status },
-    newValue: closed as unknown as Record<string, unknown>,
-    ipAddress: c.req.header('cf-connecting-ip') || null,
-    userAgent: c.req.header('user-agent') || null,
-    createdAt: new Date().toISOString(),
-  });
-
-  return c.json({ success: true, data: closed, error: null });
+  return c.json({ success: true, data: closeRes.shift, error: null });
 });
 
 // GET /api/v1/shifts/:shiftId/entry-grid - Shift entry workspace helper

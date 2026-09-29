@@ -38,11 +38,17 @@ export class FinancialService {
     }>();
 
     for (const nozzle of nozzleSnapshots) {
+      const productId = nozzle.productId;
+      const price = priceMap.get(productId);
+
+      if (price === undefined || price <= 0 || nozzle.productUnit !== 'LITRE') {
+        throw new Error('FINANCIAL_PRICE_SNAPSHOT_UNAVAILABLE');
+      }
+
       const reading = readingMap.get(nozzle.nozzleId);
       const netQuantity = reading?.netSalesQuantityMilliunits || 0;
-      const price = priceMap.get(nozzle.productId) || 0;
 
-      let pData = productTotals.get(nozzle.productId);
+      let pData = productTotals.get(productId);
       if (!pData) {
         pData = {
           productCode: nozzle.productCode,
@@ -51,7 +57,7 @@ export class FinancialService {
           quantityMilliunits: 0,
           pricePaisePerUnit: price
         };
-        productTotals.set(nozzle.productId, pData);
+        productTotals.set(productId, pData);
       }
       pData.quantityMilliunits += netQuantity;
     }
@@ -60,12 +66,14 @@ export class FinancialService {
     let fuelTotalPaise = 0;
 
     for (const [productId, data] of productTotals.entries()) {
-      // quantityMilliunits * pricePaisePerUnit / 1000
-      // Use BigInt for intermediate calculation
       const numerator = BigInt(data.quantityMilliunits) * BigInt(data.pricePaisePerUnit);
       const quotient = numerator / 1000n;
       const remainder = numerator % 1000n;
-      
+
+      if (quotient > BigInt(Number.MAX_SAFE_INTEGER)) {
+        throw new Error('FINANCIAL_AMOUNT_OVERFLOW');
+      }
+
       let revenuePaise = Number(quotient);
       if (remainder >= 500n) {
         revenuePaise += 1;
@@ -216,8 +224,19 @@ export class FinancialService {
     };
   }
 
-  async performFinancialReconciliation(shiftId: string, varianceReason?: string): Promise<ShiftFinancialReconciliation> {
+  async performFinancialReconciliation(
+    shiftId: string,
+    varianceReason?: string,
+    persist = true
+  ): Promise<ShiftFinancialReconciliation> {
     const summary = await this.getShiftFinancialSummary(shiftId);
+
+    const trimmedReason = varianceReason ? varianceReason.trim() : null;
+    if (summary.variancePaise !== 0) {
+      if (!trimmedReason || trimmedReason.length < 3) {
+        throw new Error('VARIANCE_REASON_REQUIRED');
+      }
+    }
 
     const data = {
       id: `sfr-${crypto.randomUUID()}`,
@@ -236,12 +255,15 @@ export class FinancialService {
       totalCollectionsPaise: summary.collections.totalPaise,
       salesCollectionVariancePaise: summary.variancePaise,
       varianceStatus: summary.varianceStatus!,
-      varianceReason: varianceReason || null,
+      varianceReason: trimmedReason,
       calculatedAt: new Date().toISOString(),
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
 
-    return this.financialRepo.createOrUpdateFinancialReconciliation(data);
+    if (persist) {
+      return this.financialRepo.createOrUpdateFinancialReconciliation(data);
+    }
+    return data as ShiftFinancialReconciliation;
   }
 }

@@ -430,6 +430,14 @@ export const ProductPriceSchema = z.object({
   pricePaisePerUnit: MoneyStringSchema,
   effectiveFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Date must be YYYY-MM-DD'),
   effectiveTo: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Date must be YYYY-MM-DD').optional().nullable(),
+}).refine(data => {
+  if (data.effectiveTo && data.effectiveTo < data.effectiveFrom) {
+    return false;
+  }
+  return true;
+}, {
+  message: 'effectiveTo cannot be earlier than effectiveFrom',
+  path: ['effectiveTo'],
 });
 
 export const CreditPartySchema = z.object({

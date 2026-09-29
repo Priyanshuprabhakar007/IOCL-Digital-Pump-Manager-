@@ -548,6 +548,7 @@ describe('IOCL Digital Pump Manager Phase 2B Tank Stock, Fuel Receipt & Reconcil
       new Request(`http://localhost/api/v1/shifts/${shiftId}/close`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Cookie: dealerCookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({ varianceReason: 'Test closing variance reason' }),
       }),
       env
     );

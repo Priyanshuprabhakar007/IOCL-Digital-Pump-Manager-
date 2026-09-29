@@ -257,6 +257,20 @@ export class FinancialRepository {
     return (await this.findCashHandoverById(id))!;
   }
 
+  async updateCashHandoverStatusConditional(id: string, data: any): Promise<CashHandover | null> {
+    const res = await this.db.all<{ id: string }>(
+      sql`UPDATE cash_handover_logs
+          SET status = ${data.status},
+              received_by_user_id = ${data.receivedByUserId || null},
+              received_at = ${data.receivedAt || null},
+              updated_at = ${data.updatedAt}
+          WHERE id = ${id} AND status = 'PENDING'
+          RETURNING id`
+    );
+    if (!res || res.length === 0) return null;
+    return this.findCashHandoverById(id);
+  }
+
   // ==========================================
   // BANK DEPOSITS
   // ==========================================
@@ -287,6 +301,21 @@ export class FinancialRepository {
     return (await this.findBankDepositById(id))!;
   }
 
+  async updateBankDepositStatusConditional(id: string, data: any): Promise<BankDeposit | null> {
+    const res = await this.db.all<{ id: string }>(
+      sql`UPDATE bank_deposits
+          SET status = ${data.status},
+              verified_by_user_id = ${data.verifiedByUserId || null},
+              verified_at = ${data.verifiedAt || null},
+              rejection_reason = ${data.rejectionReason || null},
+              updated_at = ${data.updatedAt}
+          WHERE id = ${id} AND status = 'SUBMITTED'
+          RETURNING id`
+    );
+    if (!res || res.length === 0) return null;
+    return this.findBankDepositById(id);
+  }
+
   // ==========================================
   // SNAPSHOTS & RECONCILIATION
   // ==========================================
@@ -314,5 +343,9 @@ export class FinancialRepository {
       await this.db.insert(schema.shiftFinancialReconciliations).values(data);
     }
     return (await this.findShiftFinancialReconciliation(data.operationalShiftId))!;
+  }
+
+  async deleteFinancialReconciliation(shiftId: string): Promise<void> {
+    await this.db.delete(schema.shiftFinancialReconciliations).where(eq(schema.shiftFinancialReconciliations.operationalShiftId, shiftId));
   }
 }

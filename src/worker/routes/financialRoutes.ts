@@ -70,8 +70,12 @@ financialRoutes.post('/outlets/:outletId/product-prices', requirePermission(PERM
     return c.json({ success: false, error: { code: 'FORBIDDEN', message: 'No authority over this outlet' } }, 403);
   }
 
-  const body = await c.req.json();
-  const validated = ProductPriceSchema.parse(body);
+  const body = await c.req.json().catch(() => ({}));
+  const parseRes = ProductPriceSchema.safeParse(body);
+  if (!parseRes.success) {
+    return c.json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'Invalid product price payload', details: parseRes.error.flatten() } }, 400);
+  }
+  const validated = parseRes.data;
 
   // Validate product and mapping
   const product = await pumpRepo.findProductById(validated.productId);
@@ -123,6 +127,7 @@ financialRoutes.put('/product-prices/:id', requirePermission(PERMISSIONS.PRODUCT
   const db = getDb(c.env.DB);
   const repo = new FinancialRepository(db);
   const outletRepo = new OutletRepository(db);
+  const pumpRepo = new PumpRepository(db);
   const auditRepo = new AuditRepository(db);
 
   const existing = await repo.findProductPriceById(id);
@@ -132,8 +137,22 @@ financialRoutes.put('/product-prices/:id', requirePermission(PERMISSIONS.PRODUCT
     return c.json({ success: false, error: { code: 'FORBIDDEN', message: 'No authority over this outlet' } }, 403);
   }
 
-  const body = await c.req.json();
-  const validated = ProductPriceSchema.parse(body);
+  const body = await c.req.json().catch(() => ({}));
+  const parseRes = ProductPriceSchema.safeParse(body);
+  if (!parseRes.success) {
+    return c.json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'Invalid product price payload', details: parseRes.error.flatten() } }, 400);
+  }
+  const validated = parseRes.data;
+
+  const product = await pumpRepo.findProductById(validated.productId);
+  if (!product || product.status !== 'ACTIVE' || product.unit !== 'LITRE') {
+    return c.json({ success: false, error: { code: 'INVALID_PRODUCT', message: 'Product must be ACTIVE and LITRE unit' } }, 400);
+  }
+
+  const mapping = await pumpRepo.findOutletProduct(existing.outletId, validated.productId);
+  if (!mapping || mapping.status !== 'ACTIVE') {
+    return c.json({ success: false, error: { code: 'PRODUCT_NOT_MAPPED', message: 'Product is not actively mapped to this outlet' } }, 400);
+  }
 
   const overlap = await repo.checkPriceOverlap(existing.outletId, validated.productId, validated.effectiveFrom, validated.effectiveTo || null, id);
   if (overlap) {
@@ -195,8 +214,12 @@ financialRoutes.post('/outlets/:outletId/credit-parties', requirePermission(PERM
     return c.json({ success: false, error: { code: 'FORBIDDEN', message: 'No authority over this outlet' } }, 403);
   }
 
-  const body = await c.req.json();
-  const validated = CreditPartySchema.parse(body);
+  const body = await c.req.json().catch(() => ({}));
+  const parseRes = CreditPartySchema.safeParse(body);
+  if (!parseRes.success) {
+    return c.json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'Invalid credit party payload', details: parseRes.error.flatten() } }, 400);
+  }
+  const validated = parseRes.data;
 
   const existing = await repo.findCreditPartyByCode(outletId, validated.partyCode);
   if (existing) return c.json({ success: false, error: { code: 'CONFLICT', message: 'Party code already exists for this outlet' } }, 409);
@@ -240,8 +263,12 @@ financialRoutes.put('/credit-parties/:id', requirePermission(PERMISSIONS.CREDIT_
     return c.json({ success: false, error: { code: 'FORBIDDEN', message: 'No authority over this outlet' } }, 403);
   }
 
-  const body = await c.req.json();
-  const validated = CreditPartySchema.parse(body);
+  const body = await c.req.json().catch(() => ({}));
+  const parseRes = CreditPartySchema.safeParse(body);
+  if (!parseRes.success) {
+    return c.json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'Invalid credit party payload', details: parseRes.error.flatten() } }, 400);
+  }
+  const validated = parseRes.data;
 
   const updated = await repo.updateCreditParty(id, {
     ...validated,
@@ -312,19 +339,30 @@ financialRoutes.post('/shifts/:shiftId/collections', requirePermission(PERMISSIO
     return c.json({ success: false, error: { code: 'SHIFT_CLOSED', message: 'Shift is not OPEN for collection entry' } }, 409);
   }
 
-  const body = await c.req.json();
-  const validated = ShiftCollectionSchema.parse(body);
+  const body = await c.req.json().catch(() => ({}));
+  const parseRes = ShiftCollectionSchema.safeParse(body);
+  if (!parseRes.success) {
+    return c.json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'Invalid collection payload', details: parseRes.error.flatten() } }, 400);
+  }
+  const validated = parseRes.data;
 
   let snapshotCode = null;
   let snapshotName = null;
 
   if (validated.collectionType === 'CREDIT_SALE') {
-    const party = await repo.findCreditPartyById(validated.creditPartyId!);
+    if (!validated.creditPartyId) {
+      return c.json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'Credit party is required for credit sales' } }, 400);
+    }
+    const party = await repo.findCreditPartyById(validated.creditPartyId);
     if (!party || party.status !== 'ACTIVE' || party.outletId !== shift.outletId) {
       return c.json({ success: false, error: { code: 'INVALID_CREDIT_PARTY', message: 'Active credit party from same outlet is required' } }, 400);
     }
     snapshotCode = party.partyCode;
     snapshotName = party.partyName;
+  } else {
+    if (validated.creditPartyId) {
+      return c.json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'creditPartyId must be null for non-credit collections' } }, 400);
+    }
   }
 
   const id = `col-${crypto.randomUUID()}`;
@@ -365,6 +403,95 @@ financialRoutes.post('/shifts/:shiftId/collections', requirePermission(PERMISSIO
   return c.json({ success: true, data: collection }, 201);
 });
 
+async function handleCollectionUpdate(c: AppContext, collectionId: string) {
+  const db = getDb(c.env.DB);
+  const repo = new FinancialRepository(db);
+  const pumpRepo = new PumpRepository(db);
+  const outletRepo = new OutletRepository(db);
+  const auditRepo = new AuditRepository(db);
+
+  const existing = await repo.findCollectionById(collectionId);
+  if (!existing) return c.json({ success: false, error: { code: 'NOT_FOUND', message: 'Collection not found' } }, 404);
+
+  if (!await verifyOutletAuthority(c, existing.outletId, outletRepo)) {
+    return c.json({ success: false, error: { code: 'FORBIDDEN', message: 'No authority over this outlet' } }, 403);
+  }
+
+  const shift = await pumpRepo.findOperationalShiftById(existing.operationalShiftId);
+  if (!shift || shift.status !== 'OPEN') {
+    return c.json({ success: false, error: { code: 'SHIFT_CLOSED', message: 'Parent shift is not OPEN' } }, 409);
+  }
+
+  const body = await c.req.json().catch(() => ({}));
+  const parseRes = ShiftCollectionSchema.safeParse(body);
+  if (!parseRes.success) {
+    return c.json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'Invalid collection payload', details: parseRes.error.flatten() } }, 400);
+  }
+  const validated = parseRes.data;
+
+  let snapshotCode = null;
+  let snapshotName = null;
+
+  if (validated.collectionType === 'CREDIT_SALE') {
+    if (!validated.creditPartyId) {
+      return c.json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'Credit party is required for credit sales' } }, 400);
+    }
+    const party = await repo.findCreditPartyById(validated.creditPartyId);
+    if (!party || party.status !== 'ACTIVE' || party.outletId !== existing.outletId) {
+      return c.json({ success: false, error: { code: 'INVALID_CREDIT_PARTY', message: 'Active credit party from same outlet is required' } }, 400);
+    }
+    snapshotCode = party.partyCode;
+    snapshotName = party.partyName;
+  } else {
+    if (validated.creditPartyId) {
+      return c.json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'creditPartyId must be null for non-credit collections' } }, 400);
+    }
+  }
+
+  const now = new Date().toISOString();
+  const { collection, shiftClosed } = await repo.updateCollection(collectionId, {
+    collectionType: validated.collectionType,
+    amountPaise: parseMoneyToPaise(validated.amount),
+    provider: validated.provider || null,
+    referenceNumber: validated.referenceNumber || null,
+    creditPartyId: validated.creditPartyId || null,
+    creditPartyCodeSnapshot: snapshotCode,
+    creditPartyNameSnapshot: snapshotName,
+    collectedAt: validated.collectedAt,
+    notes: validated.notes || null,
+    updatedAt: now
+  });
+
+  if (shiftClosed) {
+    return c.json({ success: false, error: { code: 'SHIFT_CLOSED', message: 'Shift is not OPEN' } }, 409);
+  }
+
+  await auditRepo.logAction({
+    id: `aud-${crypto.randomUUID()}`,
+    userId: c.var.user!.user.id,
+    action: 'COLLECTION_UPDATE',
+    entityType: 'SHIFT_COLLECTION',
+    entityId: collectionId,
+    oldValue: existing as any,
+    newValue: collection as any,
+    createdAt: now
+  });
+
+  return c.json({ success: true, data: collection });
+}
+
+financialRoutes.put('/collections/:id', requirePermission(PERMISSIONS.COLLECTIONS_WRITE) as any, async (c: AppContext) => {
+  const id = c.req.param('id');
+  if (!id) return c.json({ success: false, error: { code: 'BAD_REQUEST', message: 'id is required' } }, 400);
+  return handleCollectionUpdate(c, id);
+});
+
+financialRoutes.patch('/collections/:id', requirePermission(PERMISSIONS.COLLECTIONS_WRITE) as any, async (c: AppContext) => {
+  const id = c.req.param('id');
+  if (!id) return c.json({ success: false, error: { code: 'BAD_REQUEST', message: 'id is required' } }, 400);
+  return handleCollectionUpdate(c, id);
+});
+
 financialRoutes.delete('/collections/:id', requirePermission(PERMISSIONS.COLLECTIONS_WRITE) as any, async (c: AppContext) => {
   const id = c.req.param('id');
   if (!id) return c.json({ success: false, error: { code: 'BAD_REQUEST', message: 'id is required' } }, 400);
@@ -372,6 +499,7 @@ financialRoutes.delete('/collections/:id', requirePermission(PERMISSIONS.COLLECT
   const db = getDb(c.env.DB);
   const repo = new FinancialRepository(db);
   const outletRepo = new OutletRepository(db);
+  const pumpRepo = new PumpRepository(db);
   const auditRepo = new AuditRepository(db);
 
   const existing = await repo.findCollectionById(id);
@@ -379,6 +507,11 @@ financialRoutes.delete('/collections/:id', requirePermission(PERMISSIONS.COLLECT
 
   if (!await verifyOutletAuthority(c, existing.outletId, outletRepo)) {
     return c.json({ success: false, error: { code: 'FORBIDDEN', message: 'No authority over this outlet' } }, 403);
+  }
+
+  const shift = await pumpRepo.findOperationalShiftById(existing.operationalShiftId);
+  if (!shift || shift.status !== 'OPEN') {
+    return c.json({ success: false, error: { code: 'SHIFT_CLOSED', message: 'Shift is not OPEN' } }, 409);
   }
 
   const { shiftClosed } = await repo.deleteCollection(id);
@@ -449,8 +582,12 @@ financialRoutes.post('/shifts/:shiftId/cash-handovers', requirePermission(PERMIS
     return c.json({ success: false, error: { code: 'SHIFT_CLOSED', message: 'Shift is not OPEN for handover entry' } }, 409);
   }
 
-  const body = await c.req.json();
-  const validated = CashHandoverSchema.parse(body);
+  const body = await c.req.json().catch(() => ({}));
+  const parseRes = CashHandoverSchema.safeParse(body);
+  if (!parseRes.success) {
+    return c.json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'Invalid cash handover payload', details: parseRes.error.flatten() } }, 400);
+  }
+  const validated = parseRes.data;
 
   const id = `hnd-${crypto.randomUUID()}`;
   const now = new Date().toISOString();
@@ -500,23 +637,38 @@ financialRoutes.patch('/cash-handovers/:id/status', requirePermission(PERMISSION
     return c.json({ success: false, error: { code: 'FORBIDDEN', message: 'No authority over this outlet' } }, 403);
   }
 
-  const body = await c.req.json();
+  if (existing.status !== 'PENDING') {
+    return c.json({ success: false, error: { code: 'HANDOVER_STATE_CHANGED', message: 'Handover is already processed (terminal state)' } }, 409);
+  }
+
+  const body = await c.req.json().catch(() => ({}));
   const status = body.status;
   if (!['ACKNOWLEDGED', 'DISPUTED'].includes(status)) {
     return c.json({ success: false, error: { code: 'INVALID_STATUS', message: 'Valid statuses: ACKNOWLEDGED, DISPUTED' } }, 400);
   }
 
-  // Prevent same user from acknowledging their own handover
   if (status === 'ACKNOWLEDGED' && existing.handedOverByUserId === c.var.user!.user.id) {
     return c.json({ success: false, error: { code: 'SELF_ACKNOWLEDGEMENT_PROHIBITED', message: 'You cannot acknowledge your own handover' } }, 400);
   }
 
-  const updated = await repo.updateCashHandoverStatus(id, {
+  const now = new Date().toISOString();
+  const updateData: any = {
     status,
-    receivedByUserId: c.var.user!.user.id,
-    receivedAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  });
+    updatedAt: now
+  };
+
+  if (status === 'ACKNOWLEDGED') {
+    updateData.receivedByUserId = c.var.user!.user.id;
+    updateData.receivedAt = now;
+  } else {
+    updateData.receivedByUserId = null;
+    updateData.receivedAt = null;
+  }
+
+  const updated = await repo.updateCashHandoverStatusConditional(id, updateData);
+  if (!updated) {
+    return c.json({ success: false, error: { code: 'HANDOVER_STATE_CHANGED', message: 'Handover state changed concurrently' } }, 409);
+  }
 
   await auditRepo.logAction({
     id: `aud-${crypto.randomUUID()}`,
@@ -526,7 +678,7 @@ financialRoutes.patch('/cash-handovers/:id/status', requirePermission(PERMISSION
     entityId: id,
     oldValue: { status: existing.status },
     newValue: { status },
-    createdAt: new Date().toISOString()
+    createdAt: now
   });
 
   return c.json({ success: true, data: updated });
@@ -578,8 +730,12 @@ financialRoutes.post('/shifts/:shiftId/bank-deposits', requirePermission(PERMISS
     return c.json({ success: false, error: { code: 'FORBIDDEN', message: 'No authority over this shift' } }, 403);
   }
 
-  const body = await c.req.json();
-  const validated = BankDepositSchema.parse(body);
+  const body = await c.req.json().catch(() => ({}));
+  const parseRes = BankDepositSchema.safeParse(body);
+  if (!parseRes.success) {
+    return c.json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'Invalid bank deposit payload', details: parseRes.error.flatten() } }, 400);
+  }
+  const validated = parseRes.data;
 
   if (validated.documentId) {
     const [doc] = await db.select().from(schema.documents).where(eq(schema.documents.id, validated.documentId));
@@ -635,23 +791,36 @@ financialRoutes.patch('/bank-deposits/:id/status', requirePermission(PERMISSIONS
     return c.json({ success: false, error: { code: 'FORBIDDEN', message: 'No authority over this outlet' } }, 403);
   }
 
-  const body = await c.req.json();
+  if (existing.status !== 'SUBMITTED') {
+    return c.json({ success: false, error: { code: 'DEPOSIT_STATE_CHANGED', message: 'Deposit is already processed (terminal state)' } }, 409);
+  }
+
+  const body = await c.req.json().catch(() => ({}));
   const status = body.status;
   if (!['VERIFIED', 'REJECTED'].includes(status)) {
     return c.json({ success: false, error: { code: 'INVALID_STATUS', message: 'Valid statuses: VERIFIED, REJECTED' } }, 400);
   }
 
-  if (status === 'REJECTED' && !body.rejectionReason) {
-    return c.json({ success: false, error: { code: 'REJECTION_REASON_REQUIRED', message: 'Reason is required for rejection' } }, 400);
+  let rejectionReason: string | null = null;
+  if (status === 'REJECTED') {
+    if (!body.rejectionReason || typeof body.rejectionReason !== 'string' || body.rejectionReason.trim().length === 0) {
+      return c.json({ success: false, error: { code: 'REJECTION_REASON_REQUIRED', message: 'Reason is required for rejection' } }, 400);
+    }
+    rejectionReason = body.rejectionReason.trim();
   }
 
-  const updated = await repo.updateBankDepositStatus(id, {
+  const now = new Date().toISOString();
+  const updated = await repo.updateBankDepositStatusConditional(id, {
     status,
     verifiedByUserId: c.var.user!.user.id,
-    verifiedAt: new Date().toISOString(),
-    rejectionReason: body.rejectionReason || null,
-    updatedAt: new Date().toISOString()
+    verifiedAt: now,
+    rejectionReason,
+    updatedAt: now
   });
+
+  if (!updated) {
+    return c.json({ success: false, error: { code: 'DEPOSIT_STATE_CHANGED', message: 'Deposit state changed concurrently' } }, 409);
+  }
 
   await auditRepo.logAction({
     id: `aud-${crypto.randomUUID()}`,
@@ -660,8 +829,8 @@ financialRoutes.patch('/bank-deposits/:id/status', requirePermission(PERMISSIONS
     entityType: 'BANK_DEPOSIT',
     entityId: id,
     oldValue: { status: existing.status },
-    newValue: { status, reason: body.rejectionReason },
-    createdAt: new Date().toISOString()
+    newValue: { status, reason: rejectionReason },
+    createdAt: now
   });
 
   return c.json({ success: true, data: updated });
@@ -700,39 +869,11 @@ financialRoutes.get('/shifts/:shiftId/financial-summary', requirePermission(PERM
 });
 
 financialRoutes.post('/shifts/:shiftId/financial-reconcile', requirePermission(PERMISSIONS.SHIFTS_CLOSE) as any, async (c: AppContext) => {
-  const shiftId = c.req.param('shiftId');
-  if (!shiftId) return c.json({ success: false, error: { code: 'BAD_REQUEST', message: 'shiftId is required' } }, 400);
-
-  const db = getDb(c.env.DB);
-  const financialRepo = new FinancialRepository(db);
-  const pumpRepo = new PumpRepository(db);
-  const outletRepo = new OutletRepository(db);
-  const service = new FinancialService(financialRepo, pumpRepo);
-  const auditRepo = new AuditRepository(db);
-
-  const shift = await pumpRepo.findOperationalShiftById(shiftId);
-  if (!shift) return c.json({ success: false, error: { code: 'NOT_FOUND', message: 'Shift not found' } }, 404);
-
-  if (!await verifyOutletAuthority(c, shift.outletId, outletRepo)) {
-    return c.json({ success: false, error: { code: 'FORBIDDEN', message: 'No authority over this shift' } }, 403);
-  }
-
-  const body = await c.req.json();
-  const varianceReason = body.varianceReason;
-
-  const recon = await service.performFinancialReconciliation(shiftId, varianceReason);
-  
-  await auditRepo.logAction({
-    id: `aud-${crypto.randomUUID()}`,
-    userId: c.var.user!.user.id,
-    action: 'FINANCIAL_RECONCILIATION_PERFORMED',
-    entityType: 'OPERATIONAL_SHIFT',
-    entityId: shiftId,
-    newValue: recon as any,
-    createdAt: new Date().toISOString()
-  });
-
-  return c.json({ success: true, data: recon });
+  return c.json({
+    success: false,
+    data: null,
+    error: { code: 'ENDPOINT_DISABLED', message: 'Authoritative financial reconciliation is performed exclusively via shift-close orchestration.' }
+  }, 405);
 });
 
 export default financialRoutes;
