@@ -81,8 +81,8 @@ financialRoutes.post('/outlets/:outletId/product-prices', requirePermission(PERM
 
   // Validate product and mapping
   const product = await pumpRepo.findProductById(validated.productId);
-  const isFuel = product?.status === 'ACTIVE' && product.unit === 'LITRE';
   const isCng = product?.status === 'ACTIVE' && product.category === 'CNG' && product.unit === 'KG';
+  const isFuel = product?.status === 'ACTIVE' && product.unit === 'LITRE' && product.category !== 'CNG';
 
   if (!product || (!isFuel && !isCng)) {
     return c.json({ success: false, error: { code: 'INVALID_PRODUCT', message: 'Product must be ACTIVE LITRE (Fuel) or ACTIVE CNG KG' } }, 400);
@@ -151,8 +151,8 @@ financialRoutes.put('/product-prices/:id', requirePermission(PERMISSIONS.PRODUCT
   const validated = parseRes.data;
 
   const product = await pumpRepo.findProductById(validated.productId);
-  const isFuel = product?.status === 'ACTIVE' && product.unit === 'LITRE';
   const isCng = product?.status === 'ACTIVE' && product.category === 'CNG' && product.unit === 'KG';
+  const isFuel = product?.status === 'ACTIVE' && product.unit === 'LITRE' && product.category !== 'CNG';
 
   if (!product || (!isFuel && !isCng)) {
     return c.json({ success: false, error: { code: 'INVALID_PRODUCT', message: 'Product must be ACTIVE LITRE (Fuel) or ACTIVE CNG KG' } }, 400);
