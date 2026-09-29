@@ -196,7 +196,12 @@ export class FinancialRepository {
     return { collection: col, shiftClosed: false };
   }
 
-  async deleteCollection(id: string): Promise<{ success: boolean; shiftClosed: boolean }> {
+  async deleteCollection(id: string): Promise<{ success: boolean; reason?: 'NOT_FOUND' | 'SHIFT_CLOSED' }> {
+    const existing = await this.findCollectionById(id);
+    if (!existing) {
+      return { success: false, reason: 'NOT_FOUND' };
+    }
+
     const deleted = await this.db.all<{ id: string }>(
       sql`DELETE FROM shift_collections
           WHERE id = ${id}
@@ -205,10 +210,10 @@ export class FinancialRepository {
     );
 
     if (!deleted || deleted.length === 0) {
-      return { success: false, shiftClosed: true };
+      return { success: false, reason: 'SHIFT_CLOSED' };
     }
 
-    return { success: true, shiftClosed: false };
+    return { success: true };
   }
 
   // ==========================================

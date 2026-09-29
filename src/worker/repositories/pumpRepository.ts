@@ -2626,4 +2626,8 @@ export class PumpRepository {
       byProduct,
     };
   }
+
+  async deleteStockReconciliation(shiftId: string): Promise<void> {
+    await this.db.delete(schema.shiftStockReconciliations).where(eq(schema.shiftStockReconciliations.operationalShiftId, shiftId));
+  }
 }

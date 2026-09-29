@@ -39,6 +39,7 @@ export class ShiftCloseService {
       await this.pumpRepo.restoreOpenFromClosing(shiftId);
       // Clean up any authoritative reconciliation created during the failed attempt
       await this.financialRepo.deleteFinancialReconciliation(shiftId);
+      await this.pumpRepo.deleteStockReconciliation(shiftId);
       return {
         success: false,
         shift: await this.pumpRepo.findOperationalShiftById(shiftId),

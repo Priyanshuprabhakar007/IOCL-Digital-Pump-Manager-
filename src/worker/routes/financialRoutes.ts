@@ -73,6 +73,7 @@ financialRoutes.post('/outlets/:outletId/product-prices', requirePermission(PERM
   const body = await c.req.json().catch(() => ({}));
   const parseRes = ProductPriceSchema.safeParse(body);
   if (!parseRes.success) {
+    console.log('DEBUG_ERR', 'product-price', parseRes.error.flatten());
     return c.json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'Invalid product price payload', details: parseRes.error.flatten() } }, 400);
   }
   const validated = parseRes.data;
@@ -140,6 +141,7 @@ financialRoutes.put('/product-prices/:id', requirePermission(PERMISSIONS.PRODUCT
   const body = await c.req.json().catch(() => ({}));
   const parseRes = ProductPriceSchema.safeParse(body);
   if (!parseRes.success) {
+    console.log('DEBUG_ERR', 'product-price', parseRes.error.flatten());
     return c.json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'Invalid product price payload', details: parseRes.error.flatten() } }, 400);
   }
   const validated = parseRes.data;
@@ -514,8 +516,11 @@ financialRoutes.delete('/collections/:id', requirePermission(PERMISSIONS.COLLECT
     return c.json({ success: false, error: { code: 'SHIFT_CLOSED', message: 'Shift is not OPEN' } }, 409);
   }
 
-  const { shiftClosed } = await repo.deleteCollection(id);
-  if (shiftClosed) {
+  const delRes = await repo.deleteCollection(id);
+  if (!delRes.success) {
+    if (delRes.reason === 'NOT_FOUND') {
+      return c.json({ success: false, error: { code: 'NOT_FOUND', message: 'Collection not found' } }, 404);
+    }
     return c.json({ success: false, error: { code: 'SHIFT_CLOSED', message: 'Shift is not OPEN' } }, 409);
   }
 
