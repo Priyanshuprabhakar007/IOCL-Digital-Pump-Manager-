@@ -40,6 +40,7 @@ export class CngService {
     const shift = await this.pumpRepo.findOperationalShiftById(shiftId);
     if (!shift) return { success: false, log: null, error: 'SHIFT_NOT_FOUND' };
 
+    // Friendly pre-check
     const isAvailable = await this.cngRepo.isCngAvailableAtOutlet(shift.outletId);
     if (!isAvailable) return { success: false, log: null, error: 'CNG_NOT_AVAILABLE_AT_OUTLET' };
 
@@ -75,8 +76,7 @@ export class CngService {
 
     const res = await this.cngRepo.upsertShiftLog(upsertData);
     if (!res.success) {
-      if (res.shiftClosed) return { success: false, log: null, error: 'SHIFT_CLOSED' };
-      return { success: false, log: null, error: 'UPSERT_FAILED' };
+      return { success: false, log: null, error: res.error };
     }
 
     const formatted = this.formatShiftLog(res.log!);
@@ -104,6 +104,7 @@ export class CngService {
     const shift = await this.pumpRepo.findOperationalShiftById(shiftId);
     if (!shift) return { success: false, reading: null, error: 'SHIFT_NOT_FOUND' };
 
+    // Friendly pre-check
     const isAvailable = await this.cngRepo.isCngAvailableAtOutlet(shift.outletId);
     if (!isAvailable) return { success: false, reading: null, error: 'CNG_NOT_AVAILABLE_AT_OUTLET' };
 
@@ -125,8 +126,7 @@ export class CngService {
 
     const res = await this.cngRepo.createPressureReading(insertData);
     if (!res.success) {
-      if (res.shiftClosed) return { success: false, reading: null, error: 'SHIFT_CLOSED' };
-      return { success: false, reading: null, error: 'CREATE_FAILED' };
+      return { success: false, reading: null, error: res.error };
     }
 
     const formatted = this.formatPressureReading(res.reading!);
@@ -148,6 +148,7 @@ export class CngService {
     const existing = await this.cngRepo.findPressureReadingById(id);
     if (!existing) return { success: false, reading: null, error: 'NOT_FOUND' };
 
+    // Friendly pre-check
     const isAvailable = await this.cngRepo.isCngAvailableAtOutlet(existing.outletId);
     if (!isAvailable) return { success: false, reading: null, error: 'CNG_NOT_AVAILABLE_AT_OUTLET' };
 
@@ -164,9 +165,7 @@ export class CngService {
 
     const res = await this.cngRepo.updatePressureReading(id, updateData);
     if (!res.success) {
-      if (res.reason === 'SHIFT_CLOSED') return { success: false, reading: null, error: 'SHIFT_CLOSED' };
-      if (res.reason === 'NOT_FOUND') return { success: false, reading: null, error: 'NOT_FOUND' };
-      return { success: false, reading: null, error: 'UPDATE_FAILED' };
+      return { success: false, reading: null, error: res.error };
     }
 
     const formatted = this.formatPressureReading(res.reading!);
@@ -189,14 +188,13 @@ export class CngService {
     const existing = await this.cngRepo.findPressureReadingById(id);
     if (!existing) return { success: false, error: 'NOT_FOUND' };
 
+    // Friendly pre-check
     const isAvailable = await this.cngRepo.isCngAvailableAtOutlet(existing.outletId);
     if (!isAvailable) return { success: false, error: 'CNG_NOT_AVAILABLE_AT_OUTLET' };
 
     const res = await this.cngRepo.deletePressureReading(id);
     if (!res.success) {
-      if (res.reason === 'SHIFT_CLOSED') return { success: false, error: 'SHIFT_CLOSED' };
-      if (res.reason === 'NOT_FOUND') return { success: false, error: 'NOT_FOUND' };
-      return { success: false, error: 'DELETE_FAILED' };
+      return { success: false, error: res.error };
     }
 
     await this.auditRepo.logAction({

@@ -3,6 +3,8 @@ import * as schema from '../../db/schema';
 import { eq, and, sql, asc } from 'drizzle-orm';
 import { CngShiftLog, CngPressureReading } from '../../shared/types';
 
+export type CngMutationError = 'NOT_FOUND' | 'SHIFT_CLOSED' | 'CNG_NOT_AVAILABLE_AT_OUTLET' | 'UPSERT_FAILED' | 'CREATE_FAILED' | 'UPDATE_FAILED' | 'DELETE_FAILED';
+
 export class CngRepository {
   constructor(private db: AppDatabase) {}
 
@@ -32,8 +34,8 @@ export class CngRepository {
     return (row as unknown as CngShiftLog) || null;
   }
 
-  async upsertShiftLog(data: any): Promise<{ success: boolean; log: CngShiftLog | null; shiftClosed: boolean }> {
-    const { operationalShiftId } = data;
+  async upsertShiftLog(data: any): Promise<{ success: boolean; log: CngShiftLog | null; error?: CngMutationError }> {
+    const { operationalShiftId, outletId } = data;
     
     const result = await this.db.all<{ id: string }>(
       sql`INSERT INTO cng_shift_logs (
@@ -48,6 +50,15 @@ export class CngRepository {
           ${data.gridIntakeKgMilliunits}, ${data.gridSalesVarianceKgMilliunits},
           ${data.recordedByUserId}, ${data.notes}, ${data.createdAt}, ${data.updatedAt}
       WHERE EXISTS (SELECT 1 FROM operational_shifts WHERE id = ${operationalShiftId} AND status = 'OPEN')
+      AND EXISTS (
+          SELECT 1 FROM outlet_products op 
+          JOIN products p ON op.product_id = p.id 
+          WHERE op.outlet_id = ${outletId} 
+          AND op.status = 'ACTIVE' 
+          AND p.status = 'ACTIVE' 
+          AND p.category = 'CNG' 
+          AND p.unit = 'KG'
+      )
       ON CONFLICT(operational_shift_id) DO UPDATE SET
           mfm_opening_kg_milliunits = EXCLUDED.mfm_opening_kg_milliunits,
           mfm_closing_kg_milliunits = EXCLUDED.mfm_closing_kg_milliunits,
@@ -58,6 +69,15 @@ export class CngRepository {
           notes = EXCLUDED.notes,
           updated_at = EXCLUDED.updated_at
       WHERE EXISTS (SELECT 1 FROM operational_shifts WHERE id = ${operationalShiftId} AND status = 'OPEN')
+      AND EXISTS (
+          SELECT 1 FROM outlet_products op 
+          JOIN products p ON op.product_id = p.id 
+          WHERE op.outlet_id = ${outletId} 
+          AND op.status = 'ACTIVE' 
+          AND p.status = 'ACTIVE' 
+          AND p.category = 'CNG' 
+          AND p.unit = 'KG'
+      )
       RETURNING id`
     );
 
@@ -67,14 +87,17 @@ export class CngRepository {
         .from(schema.operationalShifts)
         .where(eq(schema.operationalShifts.id, operationalShiftId));
       
-      if (shift && shift.status !== 'OPEN') {
-        return { success: false, log: null, shiftClosed: true };
-      }
-      return { success: false, log: null, shiftClosed: false };
+      if (!shift) return { success: false, log: null, error: 'NOT_FOUND' };
+      if (shift.status !== 'OPEN') return { success: false, log: null, error: 'SHIFT_CLOSED' };
+      
+      const isAvailable = await this.isCngAvailableAtOutlet(outletId);
+      if (!isAvailable) return { success: false, log: null, error: 'CNG_NOT_AVAILABLE_AT_OUTLET' };
+      
+      return { success: false, log: null, error: 'UPSERT_FAILED' };
     }
 
     const log = await this.findShiftLog(operationalShiftId);
-    return { success: true, log, shiftClosed: false };
+    return { success: true, log };
   }
 
   async listPressureReadings(shiftId: string): Promise<CngPressureReading[]> {
@@ -93,7 +116,7 @@ export class CngRepository {
     return (row as unknown as CngPressureReading) || null;
   }
 
-  async createPressureReading(data: any): Promise<{ success: boolean; reading: CngPressureReading | null; shiftClosed: boolean }> {
+  async createPressureReading(data: any): Promise<{ success: boolean; reading: CngPressureReading | null; error?: CngMutationError }> {
     const inserted = await this.db.all<{ id: string }>(
       sql`INSERT INTO cng_pressure_readings (
           id, operational_shift_id, outlet_id, recorded_at, pressure_unit,
@@ -105,6 +128,15 @@ export class CngRepository {
           ${data.suctionPressureMilliunits}, ${data.dischargePressureMilliunits}, ${data.cascadePressureMilliunits},
           ${data.recordedByUserId}, ${data.notes}, ${data.createdAt}, ${data.updatedAt}
       WHERE EXISTS (SELECT 1 FROM operational_shifts WHERE id = ${data.operationalShiftId} AND status = 'OPEN')
+      AND EXISTS (
+          SELECT 1 FROM outlet_products op 
+          JOIN products p ON op.product_id = p.id 
+          WHERE op.outlet_id = ${data.outletId} 
+          AND op.status = 'ACTIVE' 
+          AND p.status = 'ACTIVE' 
+          AND p.category = 'CNG' 
+          AND p.unit = 'KG'
+      )
       RETURNING id`
     );
 
@@ -114,17 +146,20 @@ export class CngRepository {
         .from(schema.operationalShifts)
         .where(eq(schema.operationalShifts.id, data.operationalShiftId));
       
-      if (shift && shift.status !== 'OPEN') {
-        return { success: false, reading: null, shiftClosed: true };
-      }
-      return { success: false, reading: null, shiftClosed: false };
+      if (!shift) return { success: false, reading: null, error: 'NOT_FOUND' };
+      if (shift.status !== 'OPEN') return { success: false, reading: null, error: 'SHIFT_CLOSED' };
+      
+      const isAvailable = await this.isCngAvailableAtOutlet(data.outletId);
+      if (!isAvailable) return { success: false, reading: null, error: 'CNG_NOT_AVAILABLE_AT_OUTLET' };
+
+      return { success: false, reading: null, error: 'CREATE_FAILED' };
     }
 
     const reading = await this.findPressureReadingById(data.id);
-    return { success: true, reading, shiftClosed: false };
+    return { success: true, reading };
   }
 
-  async updatePressureReading(id: string, data: any): Promise<{ success: boolean; reading: CngPressureReading | null; reason?: 'NOT_FOUND' | 'SHIFT_CLOSED' }> {
+  async updatePressureReading(id: string, data: any): Promise<{ success: boolean; reading: CngPressureReading | null; error?: CngMutationError }> {
     const updated = await this.db.all<{ id: string }>(
       sql`UPDATE cng_pressure_readings
           SET
@@ -137,24 +172,54 @@ export class CngRepository {
               updated_at = ${data.updatedAt}
           WHERE id = ${id}
           AND EXISTS (SELECT 1 FROM operational_shifts WHERE id = cng_pressure_readings.operational_shift_id AND status = 'OPEN')
+          AND EXISTS (
+              SELECT 1 FROM outlet_products op 
+              JOIN products p ON op.product_id = p.id 
+              WHERE op.outlet_id = cng_pressure_readings.outlet_id 
+              AND op.status = 'ACTIVE' 
+              AND p.status = 'ACTIVE' 
+              AND p.category = 'CNG' 
+              AND p.unit = 'KG'
+          )
           RETURNING id`
     );
 
     if (!updated || updated.length === 0) {
       const existing = await this.findPressureReadingById(id);
-      if (!existing) return { success: false, reading: null, reason: 'NOT_FOUND' };
-      return { success: false, reading: null, reason: 'SHIFT_CLOSED' };
+      if (!existing) return { success: false, reading: null, error: 'NOT_FOUND' };
+      
+      const [shift] = await this.db
+        .select({ status: schema.operationalShifts.status })
+        .from(schema.operationalShifts)
+        .where(eq(schema.operationalShifts.id, existing.operationalShiftId));
+      
+      if (!shift) return { success: false, reading: null, error: 'NOT_FOUND' }; // Should not happen if reading exists
+      if (shift.status !== 'OPEN') return { success: false, reading: null, error: 'SHIFT_CLOSED' };
+      
+      const isAvailable = await this.isCngAvailableAtOutlet(existing.outletId);
+      if (!isAvailable) return { success: false, reading: null, error: 'CNG_NOT_AVAILABLE_AT_OUTLET' };
+
+      return { success: false, reading: null, error: 'UPDATE_FAILED' };
     }
 
     const reading = await this.findPressureReadingById(id);
     return { success: true, reading };
   }
 
-  async deletePressureReading(id: string): Promise<{ success: boolean; reason?: 'NOT_FOUND' | 'SHIFT_CLOSED' }> {
+  async deletePressureReading(id: string): Promise<{ success: boolean; error?: CngMutationError }> {
     const deleted = await this.db.all<{ id: string }>(
       sql`DELETE FROM cng_pressure_readings
           WHERE id = ${id}
           AND EXISTS (SELECT 1 FROM operational_shifts WHERE id = cng_pressure_readings.operational_shift_id AND status = 'OPEN')
+          AND EXISTS (
+              SELECT 1 FROM outlet_products op 
+              JOIN products p ON op.product_id = p.id 
+              WHERE op.outlet_id = cng_pressure_readings.outlet_id 
+              AND op.status = 'ACTIVE' 
+              AND p.status = 'ACTIVE' 
+              AND p.category = 'CNG' 
+              AND p.unit = 'KG'
+          )
           RETURNING id`
     );
 
@@ -163,8 +228,20 @@ export class CngRepository {
     }
 
     const existing = await this.findPressureReadingById(id);
-    if (!existing) return { success: false, reason: 'NOT_FOUND' };
-    return { success: false, reason: 'SHIFT_CLOSED' };
+    if (!existing) return { success: false, error: 'NOT_FOUND' };
+    
+    const [shift] = await this.db
+        .select({ status: schema.operationalShifts.status })
+        .from(schema.operationalShifts)
+        .where(eq(schema.operationalShifts.id, existing.operationalShiftId));
+    
+    if (!shift) return { success: false, error: 'NOT_FOUND' };
+    if (shift.status !== 'OPEN') return { success: false, error: 'SHIFT_CLOSED' };
+    
+    const isAvailable = await this.isCngAvailableAtOutlet(existing.outletId);
+    if (!isAvailable) return { success: false, error: 'CNG_NOT_AVAILABLE_AT_OUTLET' };
+
+    return { success: false, error: 'DELETE_FAILED' };
   }
 
   async getDailySummaryRaw(outletId: string, businessDate: string): Promise<any[]> {
