@@ -3,6 +3,7 @@ import { eq } from 'drizzle-orm';
 import * as schema from '../../db/schema';
 import { getDb } from '../../db';
 import { FinancialRepository } from '../repositories/financialRepository';
+import { CngRepository } from '../repositories/cngRepository';
 import { FinancialService } from '../services/financialService';
 import { PumpRepository } from '../repositories/pumpRepository';
 import { OutletRepository } from '../repositories/outletRepository';
@@ -80,8 +81,11 @@ financialRoutes.post('/outlets/:outletId/product-prices', requirePermission(PERM
 
   // Validate product and mapping
   const product = await pumpRepo.findProductById(validated.productId);
-  if (!product || product.status !== 'ACTIVE' || product.unit !== 'LITRE') {
-    return c.json({ success: false, error: { code: 'INVALID_PRODUCT', message: 'Product must be ACTIVE and LITRE unit' } }, 400);
+  const isFuel = product?.status === 'ACTIVE' && product.unit === 'LITRE';
+  const isCng = product?.status === 'ACTIVE' && product.category === 'CNG' && product.unit === 'KG';
+
+  if (!product || (!isFuel && !isCng)) {
+    return c.json({ success: false, error: { code: 'INVALID_PRODUCT', message: 'Product must be ACTIVE LITRE (Fuel) or ACTIVE CNG KG' } }, 400);
   }
 
   const mapping = await pumpRepo.findOutletProduct(outletId, validated.productId);
@@ -147,8 +151,11 @@ financialRoutes.put('/product-prices/:id', requirePermission(PERMISSIONS.PRODUCT
   const validated = parseRes.data;
 
   const product = await pumpRepo.findProductById(validated.productId);
-  if (!product || product.status !== 'ACTIVE' || product.unit !== 'LITRE') {
-    return c.json({ success: false, error: { code: 'INVALID_PRODUCT', message: 'Product must be ACTIVE and LITRE unit' } }, 400);
+  const isFuel = product?.status === 'ACTIVE' && product.unit === 'LITRE';
+  const isCng = product?.status === 'ACTIVE' && product.category === 'CNG' && product.unit === 'KG';
+
+  if (!product || (!isFuel && !isCng)) {
+    return c.json({ success: false, error: { code: 'INVALID_PRODUCT', message: 'Product must be ACTIVE LITRE (Fuel) or ACTIVE CNG KG' } }, 400);
   }
 
   const mapping = await pumpRepo.findOutletProduct(existing.outletId, validated.productId);
@@ -852,8 +859,9 @@ financialRoutes.get('/shifts/:shiftId/financial-summary', requirePermission(PERM
   const db = getDb(c.env.DB);
   const financialRepo = new FinancialRepository(db);
   const pumpRepo = new PumpRepository(db);
+  const cngRepo = new CngRepository(db);
   const outletRepo = new OutletRepository(db);
-  const service = new FinancialService(financialRepo, pumpRepo);
+  const service = new FinancialService(financialRepo, pumpRepo, cngRepo);
 
   const shift = await pumpRepo.findOperationalShiftById(shiftId);
   if (!shift) return c.json({ success: false, error: { code: 'NOT_FOUND', message: 'Shift not found' } }, 404);

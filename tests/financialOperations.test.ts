@@ -5,6 +5,7 @@ import { getDb } from '../src/db';
 import { seedDatabase } from '../src/db/seed';
 import { PumpRepository } from '../src/worker/repositories/pumpRepository';
 import { FinancialRepository } from '../src/worker/repositories/financialRepository';
+import { CngRepository } from '../src/worker/repositories/cngRepository';
 import * as schema from '../src/db/schema';
 import { eq } from 'drizzle-orm';
 import fs from 'fs';
@@ -1107,7 +1108,8 @@ describe('Phase 2C Comprehensive Integration Suite', () => {
     const pumpRepo = new PumpRepository(db);
     const finRepo = new FinancialRepository(db);
     const auditRepo = new AuditRepository(db);
-    const finService = new FinancialService(finRepo, pumpRepo);
+    const cngRepo = new CngRepository(db);
+    const finService = new FinancialService(finRepo, pumpRepo, cngRepo);
     const closeService = new ShiftCloseService(pumpRepo, finRepo, finService, auditRepo);
 
     // Setup readings to pass validation

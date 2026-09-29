@@ -533,6 +533,7 @@ export interface OperationalShiftProductPrice {
   productCode: string;
   productName: string;
   unit: string;
+  productCategory: string | null;
   pricePaisePerUnit: number;
   pricePerUnitStr?: string;
   sourcePriceId: string;
@@ -678,6 +679,7 @@ export interface ShiftFinancialSummary {
     pendingComponents: string[];
     authoritativeTotalPaise: number;
     authoritativeTotalStr: string;
+    cngProduct?: FinancialRevenueProduct | null;
   };
   collections: {
     cashPaise: number;

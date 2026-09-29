@@ -707,6 +707,26 @@ export class PumpRepository {
 
     // 1c. Resolve applicable product prices for products in the nozzle snapshot
     const productIds = Array.from(new Set(activeParticipatingNozzles.map(n => n.product.id)));
+
+    // 1d. Resolve active CNG/KG product if available
+    const [cngProduct] = await this.db
+      .select({ product: schema.products, outletProduct: schema.outletProducts })
+      .from(schema.outletProducts)
+      .innerJoin(schema.products, eq(schema.outletProducts.productId, schema.products.id))
+      .where(
+        and(
+          eq(schema.outletProducts.outletId, data.outletId),
+          eq(schema.outletProducts.status, 'ACTIVE'),
+          eq(schema.products.status, 'ACTIVE'),
+          eq(schema.products.category, 'CNG'),
+          eq(schema.products.unit, 'KG')
+        )
+      );
+    
+    if (cngProduct) {
+      productIds.push(cngProduct.product.id);
+    }
+
     const prices = await this.db
       .select()
       .from(schema.outletProductPrices)
@@ -737,6 +757,32 @@ export class PumpRepository {
         message: 'One or more products in this shift do not have a configured active price for the business date.',
       };
     }
+    
+    // Check for CNG ambiguity: If outlet has > 1 active CNG product mapped
+    const activeCngProducts = await this.db
+      .select({ count: sql<number>`count(*)` })
+      .from(schema.outletProducts)
+      .innerJoin(schema.products, eq(schema.outletProducts.productId, schema.products.id))
+      .where(
+        and(
+          eq(schema.outletProducts.outletId, data.outletId),
+          eq(schema.outletProducts.status, 'ACTIVE'),
+          eq(schema.products.status, 'ACTIVE'),
+          eq(schema.products.category, 'CNG'),
+          eq(schema.products.unit, 'KG')
+        )
+      );
+
+    if (activeCngProducts[0].count > 1) {
+        return {
+        success: false,
+        shift: null,
+        snapshotsCount: 0,
+        error: 'AMBIGUOUS_CNG_PRODUCT_CONFIGURATION',
+        message: 'Outlet has more than one active CNG/KG product configured.',
+      };
+    }
+
 
     // 2. Prevent empty operational shifts
     if (activeParticipatingNozzles.length === 0) {
@@ -812,6 +858,7 @@ export class PumpRepository {
         productCode: n.product.code,
         productName: n.product.name,
         unit: n.product.unit,
+        productCategory: n.product.category,
         pricePaisePerUnit: p.pricePaisePerUnit,
         sourcePriceId: p.id,
         createdAt: data.createdAt,

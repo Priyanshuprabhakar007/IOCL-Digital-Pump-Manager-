@@ -14,6 +14,7 @@ import {
 import { PERMISSIONS } from '../../shared/constants';
 import { parseMilliunits, formatMilliunits } from '../../shared/precision';
 import { FinancialRepository } from '../repositories/financialRepository';
+import { CngRepository } from '../repositories/cngRepository';
 import { FinancialService } from '../services/financialService';
 import { ShiftCloseService } from '../services/shiftCloseService';
 
@@ -215,7 +216,8 @@ shifts.post('/shifts/:shiftId/close', requirePermission(PERMISSIONS.SHIFTS_CLOSE
   const varianceReason = body.varianceReason;
 
   const financialRepo = new FinancialRepository(db);
-  const financialService = new FinancialService(financialRepo, pumpRepo);
+  const cngRepo = new CngRepository(db);
+  const financialService = new FinancialService(financialRepo, pumpRepo, cngRepo);
   const shiftCloseService = new ShiftCloseService(pumpRepo, financialRepo, financialService, auditRepo);
 
   const closeRes = await shiftCloseService.closeShift(
@@ -233,6 +235,7 @@ shifts.post('/shifts/:shiftId/close', requirePermission(PERMISSIONS.SHIFTS_CLOSE
     if (errCode === 'VARIANCE_REASON_REQUIRED') statusCode = 400;
     if (errCode === 'PRICE_SNAPSHOT_MISSING') statusCode = 400;
     if (errCode === 'FINANCIAL_AMOUNT_OVERFLOW') statusCode = 400;
+    if (errCode === 'INCOMPLETE_CNG_DATA') statusCode = 409;
 
     return c.json({
       success: false,

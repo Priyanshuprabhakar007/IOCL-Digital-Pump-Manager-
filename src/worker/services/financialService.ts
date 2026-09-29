@@ -1,18 +1,20 @@
 import { FinancialRepository } from '../repositories/financialRepository';
 import { PumpRepository } from '../repositories/pumpRepository';
+import { CngRepository } from '../repositories/cngRepository';
 import { 
   ShiftFinancialSummary, 
   FinancialRevenueProduct, 
   FinancialVarianceStatus,
   ShiftFinancialReconciliation
 } from '../../shared/types';
-import { formatPaiseToMoney } from '../../shared/financialUtils';
+import { formatPaiseToMoney, calculateRevenuePaise } from '../../shared/financialUtils';
 import { formatMilliunits } from '../../shared/precision';
 
 export class FinancialService {
   constructor(
     private financialRepo: FinancialRepository,
-    private pumpRepo: PumpRepository
+    private pumpRepo: PumpRepository,
+    private cngRepo: CngRepository
   ) {}
 
   async calculateShiftFuelRevenue(shiftId: string) {
@@ -24,7 +26,7 @@ export class FinancialService {
     const priceSnapshots = await this.financialRepo.listShiftProductPrices(shiftId);
 
     const priceMap = new Map<string, number>();
-    priceSnapshots.forEach(p => priceMap.set(p.productId, p.pricePaisePerUnit));
+    priceSnapshots.filter(p => p.productCategory !== 'CNG').forEach(p => priceMap.set(p.productId, p.pricePaisePerUnit));
 
     const readingMap = new Map<string, typeof meterReadings[0]>();
     meterReadings.forEach(r => readingMap.set(r.nozzleId, r));
@@ -40,6 +42,8 @@ export class FinancialService {
     for (const nozzle of nozzleSnapshots) {
       const productId = nozzle.productId;
       const price = priceMap.get(productId);
+
+      if (nozzle.productCategory === 'CNG') continue;
 
       if (price === undefined || price <= 0 || nozzle.productUnit !== 'LITRE') {
         throw new Error('FINANCIAL_PRICE_SNAPSHOT_UNAVAILABLE');
@@ -66,18 +70,7 @@ export class FinancialService {
     let fuelTotalPaise = 0;
 
     for (const [productId, data] of productTotals.entries()) {
-      const numerator = BigInt(data.quantityMilliunits) * BigInt(data.pricePaisePerUnit);
-      const quotient = numerator / 1000n;
-      const remainder = numerator % 1000n;
-
-      if (quotient > BigInt(Number.MAX_SAFE_INTEGER)) {
-        throw new Error('FINANCIAL_AMOUNT_OVERFLOW');
-      }
-
-      let revenuePaise = Number(quotient);
-      if (remainder >= 500n) {
-        revenuePaise += 1;
-      }
+      const revenuePaise = calculateRevenuePaise(data.quantityMilliunits, data.pricePaisePerUnit);
 
       byProduct.push({
         productId,
@@ -102,11 +95,58 @@ export class FinancialService {
     };
   }
 
+  async calculateShiftCngRevenue(shiftId: string) {
+    const shift = await this.pumpRepo.findOperationalShiftById(shiftId);
+    if (!shift) throw new Error('SHIFT_NOT_FOUND');
+
+    const cngLog = await this.cngRepo.findShiftLog(shiftId);
+    const priceSnapshots = await this.financialRepo.listShiftProductPrices(shiftId);
+    const cngPriceSnapshots = priceSnapshots.filter(p => p.productCategory === 'CNG');
+
+    if (cngPriceSnapshots.length === 0) {
+      return { cngApplicable: false, cngComplete: true, cngTotalPaise: null, cngTotalStr: null, cngProduct: null };
+    }
+    if (cngPriceSnapshots.length > 1) {
+      throw new Error('CNG_PRICE_SNAPSHOT_AMBIGUOUS');
+    }
+
+    const priceSnapshot = cngPriceSnapshots[0];
+    if (!cngLog) {
+      return { cngApplicable: true, cngComplete: false, cngTotalPaise: null, cngTotalStr: null, cngProduct: null };
+    }
+
+    const quantityMilliunits = cngLog.netSalesKgMilliunits;
+    const pricePaisePerUnit = priceSnapshot.pricePaisePerUnit;
+    const revenuePaise = calculateRevenuePaise(quantityMilliunits, pricePaisePerUnit);
+
+    const cngProduct: FinancialRevenueProduct = {
+      productId: priceSnapshot.productId,
+      productCode: priceSnapshot.productCode,
+      productName: priceSnapshot.productName,
+      unit: priceSnapshot.unit,
+      quantityMilliunits,
+      quantityStr: formatMilliunits(quantityMilliunits),
+      pricePaisePerUnit,
+      pricePerUnitStr: formatPaiseToMoney(pricePaisePerUnit),
+      revenuePaise,
+      revenueStr: formatPaiseToMoney(revenuePaise)
+    };
+
+    return { 
+      cngApplicable: true, 
+      cngComplete: true, 
+      cngTotalPaise: revenuePaise, 
+      cngTotalStr: formatPaiseToMoney(revenuePaise), 
+      cngProduct 
+    };
+  }
+
   async getShiftFinancialSummary(shiftId: string): Promise<ShiftFinancialSummary> {
     const shift = await this.pumpRepo.findOperationalShiftById(shiftId);
     if (!shift) throw new Error('SHIFT_NOT_FOUND');
 
     const revenue = await this.calculateShiftFuelRevenue(shiftId);
+    const cngRevenue = await this.calculateShiftCngRevenue(shiftId);
     const collections = await this.financialRepo.listCollections(shiftId);
     const handovers = await this.financialRepo.listCashHandovers(shiftId);
     const deposits = await this.financialRepo.listBankDeposits(shiftId);
@@ -145,7 +185,20 @@ export class FinancialService {
 
     const totalCollectionsPaise = Object.values(totals).reduce((a, b) => a + b, 0);
 
-    const variancePaise = revenue.fuelTotalPaise - totalCollectionsPaise;
+    const includedComponents = ['FUEL'];
+    const pendingComponents = ['LUBE'];
+    let authoritativeTotalPaise = revenue.fuelTotalPaise;
+    
+    if (cngRevenue.cngApplicable) {
+      if (cngRevenue.cngComplete) {
+        includedComponents.push('CNG');
+        authoritativeTotalPaise += (cngRevenue.cngTotalPaise || 0);
+      } else {
+        pendingComponents.unshift('CNG');
+      }
+    }
+
+    const variancePaise = authoritativeTotalPaise - totalCollectionsPaise;
     let varianceStatus: FinancialVarianceStatus = 'BALANCED';
     if (variancePaise > 0) varianceStatus = 'SHORTAGE';
     if (variancePaise < 0) varianceStatus = 'EXCESS';
@@ -163,14 +216,15 @@ export class FinancialService {
         byProduct: revenue.byProduct,
         fuelTotalPaise: revenue.fuelTotalPaise,
         fuelTotalStr: revenue.fuelTotalStr,
-        cngTotalPaise: null,
-        cngTotalStr: null,
+        cngTotalPaise: cngRevenue.cngTotalPaise,
+        cngTotalStr: cngRevenue.cngTotalStr,
         lubeTotalPaise: null,
         lubeTotalStr: null,
-        includedComponents: ['FUEL'],
-        pendingComponents: ['CNG', 'LUBE'],
-        authoritativeTotalPaise: revenue.fuelTotalPaise,
-        authoritativeTotalStr: revenue.fuelTotalStr
+        includedComponents: includedComponents as any,
+        pendingComponents: pendingComponents as any,
+        authoritativeTotalPaise: authoritativeTotalPaise,
+        authoritativeTotalStr: formatPaiseToMoney(authoritativeTotalPaise),
+        cngProduct: cngRevenue.cngProduct
       },
       collections: {
         cashPaise: totals.CASH,
@@ -231,6 +285,13 @@ export class FinancialService {
   ): Promise<ShiftFinancialReconciliation> {
     const summary = await this.getShiftFinancialSummary(shiftId);
 
+    // CNG Completeness Check
+    const cngApplicable = summary.salesRevenue.includedComponents.includes('CNG') || 
+                          summary.salesRevenue.pendingComponents.includes('CNG');
+    if (cngApplicable && !summary.salesRevenue.includedComponents.includes('CNG')) {
+      throw new Error('INCOMPLETE_CNG_DATA');
+    }
+
     const trimmedReason = varianceReason ? varianceReason.trim() : null;
     if (summary.variancePaise !== 0) {
       if (!trimmedReason || trimmedReason.length < 3) {
@@ -243,7 +304,7 @@ export class FinancialService {
       operationalShiftId: shiftId,
       outletId: summary.outletId,
       fuelSalesRevenuePaise: summary.salesRevenue.fuelTotalPaise,
-      cngSalesRevenuePaise: null,
+      cngSalesRevenuePaise: summary.salesRevenue.cngTotalPaise,
       lubeSalesRevenuePaise: null,
       authoritativeSalesRevenuePaise: summary.salesRevenue.authoritativeTotalPaise,
       cashCollectionPaise: summary.collections.cashPaise,

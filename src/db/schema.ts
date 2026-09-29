@@ -541,6 +541,7 @@ export const operationalShiftProductPrices = sqliteTable('operational_shift_prod
   productCode: text('product_code').notNull(),
   productName: text('product_name').notNull(),
   unit: text('unit').notNull(),
+  productCategory: text('product_category'),
   pricePaisePerUnit: integer('price_paise_per_unit').notNull(),
   sourcePriceId: text('source_price_id').notNull().references(() => outletProductPrices.id),
   createdAt: text('created_at').notNull(),

@@ -40,3 +40,20 @@ export function formatPaiseToMoney(paise: number): string {
   const formatted = `${whole}.${fraction}`;
   return isNegative ? `-${formatted}` : formatted;
 }
+
+export function calculateRevenuePaise(quantityMilliunits: number, pricePaisePerUnit: number): number {
+  if (quantityMilliunits < 0 || pricePaisePerUnit < 0) throw new Error("INVALID_INPUT_VALUES");
+  
+  const numerator = BigInt(quantityMilliunits) * BigInt(pricePaisePerUnit);
+  const quotient = numerator / 1000n;
+  const remainder = numerator % 1000n;
+  
+  let revenuePaise = quotient;
+  if (remainder >= 500n) {
+    revenuePaise += 1n;
+  }
+  
+  if (revenuePaise > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("FINANCIAL_AMOUNT_OVERFLOW");
+  
+  return Number(revenuePaise);
+}
