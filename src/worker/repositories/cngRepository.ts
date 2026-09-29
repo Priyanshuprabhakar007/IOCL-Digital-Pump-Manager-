@@ -35,46 +35,42 @@ export class CngRepository {
   async upsertShiftLog(data: any): Promise<{ success: boolean; log: CngShiftLog | null; shiftClosed: boolean }> {
     const { operationalShiftId } = data;
     
-    const existing = await this.findShiftLog(operationalShiftId);
-    
-    if (existing) {
-      const updated = await this.db.all<{ id: string }>(
-        sql`UPDATE cng_shift_logs
-            SET
-                mfm_opening_kg_milliunits = ${data.mfmOpeningKgMilliunits},
-                mfm_closing_kg_milliunits = ${data.mfmClosingKgMilliunits},
-                net_sales_kg_milliunits = ${data.netSalesKgMilliunits},
-                grid_intake_kg_milliunits = ${data.gridIntakeKgMilliunits},
-                grid_sales_variance_kg_milliunits = ${data.gridSalesVarianceKgMilliunits},
-                recorded_by_user_id = ${data.recordedByUserId},
-                notes = ${data.notes},
-                updated_at = ${data.updatedAt}
-            WHERE operational_shift_id = ${operationalShiftId}
-            AND EXISTS (SELECT 1 FROM operational_shifts WHERE id = ${operationalShiftId} AND status = 'OPEN')
-            RETURNING id`
-      );
-      if (!updated || updated.length === 0) {
+    const result = await this.db.all<{ id: string }>(
+      sql`INSERT INTO cng_shift_logs (
+          id, operational_shift_id, outlet_id, 
+          mfm_opening_kg_milliunits, mfm_closing_kg_milliunits, net_sales_kg_milliunits,
+          grid_intake_kg_milliunits, grid_sales_variance_kg_milliunits,
+          recorded_by_user_id, notes, created_at, updated_at
+      )
+      SELECT
+          ${data.id}, ${data.operationalShiftId}, ${data.outletId},
+          ${data.mfmOpeningKgMilliunits}, ${data.mfmClosingKgMilliunits}, ${data.netSalesKgMilliunits},
+          ${data.gridIntakeKgMilliunits}, ${data.gridSalesVarianceKgMilliunits},
+          ${data.recordedByUserId}, ${data.notes}, ${data.createdAt}, ${data.updatedAt}
+      WHERE EXISTS (SELECT 1 FROM operational_shifts WHERE id = ${operationalShiftId} AND status = 'OPEN')
+      ON CONFLICT(operational_shift_id) DO UPDATE SET
+          mfm_opening_kg_milliunits = EXCLUDED.mfm_opening_kg_milliunits,
+          mfm_closing_kg_milliunits = EXCLUDED.mfm_closing_kg_milliunits,
+          net_sales_kg_milliunits = EXCLUDED.net_sales_kg_milliunits,
+          grid_intake_kg_milliunits = EXCLUDED.grid_intake_kg_milliunits,
+          grid_sales_variance_kg_milliunits = EXCLUDED.grid_sales_variance_kg_milliunits,
+          recorded_by_user_id = EXCLUDED.recorded_by_user_id,
+          notes = EXCLUDED.notes,
+          updated_at = EXCLUDED.updated_at
+      WHERE EXISTS (SELECT 1 FROM operational_shifts WHERE id = ${operationalShiftId} AND status = 'OPEN')
+      RETURNING id`
+    );
+
+    if (!result || result.length === 0) {
+      const [shift] = await this.db
+        .select({ status: schema.operationalShifts.status })
+        .from(schema.operationalShifts)
+        .where(eq(schema.operationalShifts.id, operationalShiftId));
+      
+      if (shift && shift.status !== 'OPEN') {
         return { success: false, log: null, shiftClosed: true };
       }
-    } else {
-      const inserted = await this.db.all<{ id: string }>(
-        sql`INSERT INTO cng_shift_logs (
-            id, operational_shift_id, outlet_id, 
-            mfm_opening_kg_milliunits, mfm_closing_kg_milliunits, net_sales_kg_milliunits,
-            grid_intake_kg_milliunits, grid_sales_variance_kg_milliunits,
-            recorded_by_user_id, notes, created_at, updated_at
-        )
-        SELECT
-            ${data.id}, ${data.operationalShiftId}, ${data.outletId},
-            ${data.mfmOpeningKgMilliunits}, ${data.mfmClosingKgMilliunits}, ${data.netSalesKgMilliunits},
-            ${data.gridIntakeKgMilliunits}, ${data.gridSalesVarianceKgMilliunits},
-            ${data.recordedByUserId}, ${data.notes}, ${data.createdAt}, ${data.updatedAt}
-        WHERE EXISTS (SELECT 1 FROM operational_shifts WHERE id = ${operationalShiftId} AND status = 'OPEN')
-        RETURNING id`
-      );
-      if (!inserted || inserted.length === 0) {
-        return { success: false, log: null, shiftClosed: true };
-      }
+      return { success: false, log: null, shiftClosed: false };
     }
 
     const log = await this.findShiftLog(operationalShiftId);
@@ -113,14 +109,22 @@ export class CngRepository {
     );
 
     if (!inserted || inserted.length === 0) {
-      return { success: false, reading: null, shiftClosed: true };
+      const [shift] = await this.db
+        .select({ status: schema.operationalShifts.status })
+        .from(schema.operationalShifts)
+        .where(eq(schema.operationalShifts.id, data.operationalShiftId));
+      
+      if (shift && shift.status !== 'OPEN') {
+        return { success: false, reading: null, shiftClosed: true };
+      }
+      return { success: false, reading: null, shiftClosed: false };
     }
 
     const reading = await this.findPressureReadingById(data.id);
     return { success: true, reading, shiftClosed: false };
   }
 
-  async updatePressureReading(id: string, data: any): Promise<{ success: boolean; reading: CngPressureReading | null; shiftClosed: boolean }> {
+  async updatePressureReading(id: string, data: any): Promise<{ success: boolean; reading: CngPressureReading | null; reason?: 'NOT_FOUND' | 'SHIFT_CLOSED' }> {
     const updated = await this.db.all<{ id: string }>(
       sql`UPDATE cng_pressure_readings
           SET
@@ -138,12 +142,12 @@ export class CngRepository {
 
     if (!updated || updated.length === 0) {
       const existing = await this.findPressureReadingById(id);
-      if (!existing) return { success: false, reading: null, shiftClosed: false };
-      return { success: false, reading: null, shiftClosed: true };
+      if (!existing) return { success: false, reading: null, reason: 'NOT_FOUND' };
+      return { success: false, reading: null, reason: 'SHIFT_CLOSED' };
     }
 
     const reading = await this.findPressureReadingById(id);
-    return { success: true, reading, shiftClosed: false };
+    return { success: true, reading };
   }
 
   async deletePressureReading(id: string): Promise<{ success: boolean; reason?: 'NOT_FOUND' | 'SHIFT_CLOSED' }> {

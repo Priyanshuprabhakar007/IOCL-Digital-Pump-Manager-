@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, real, primaryKey, index, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, integer, real, primaryKey, index, uniqueIndex, check } from 'drizzle-orm/sqlite-core';
 import { sql } from 'drizzle-orm';
 
 export const users = sqliteTable('users', {
@@ -661,6 +661,13 @@ export const cngShiftLogs = sqliteTable('cng_shift_logs', {
 }, (table) => [
   index('idx_cng_shift_logs_outlet_id').on(table.outletId),
   index('idx_cng_shift_logs_shift_id').on(table.operationalShiftId),
+  check('mfm_opening_kg_milliunits_check', sql`${table.mfmOpeningKgMilliunits} >= 0`),
+  check('mfm_closing_kg_milliunits_check', sql`${table.mfmClosingKgMilliunits} >= ${table.mfmOpeningKgMilliunits}`),
+  check('net_sales_kg_milliunits_check', sql`${table.netSalesKgMilliunits} = ${table.mfmClosingKgMilliunits} - ${table.mfmOpeningKgMilliunits}`),
+  check('grid_consistency_check', sql`
+    (${table.gridIntakeKgMilliunits} IS NULL AND ${table.gridSalesVarianceKgMilliunits} IS NULL) OR
+    (${table.gridIntakeKgMilliunits} IS NOT NULL AND ${table.gridIntakeKgMilliunits} >= 0 AND ${table.gridSalesVarianceKgMilliunits} = ${table.gridIntakeKgMilliunits} - ${table.netSalesKgMilliunits})
+  `),
 ]);
 
 export const cngPressureReadings = sqliteTable('cng_pressure_readings', {
@@ -679,5 +686,9 @@ export const cngPressureReadings = sqliteTable('cng_pressure_readings', {
 }, (table) => [
   index('idx_cng_pressure_readings_shift_at').on(table.operationalShiftId, table.recordedAt),
   index('idx_cng_pressure_readings_outlet_at').on(table.outletId, table.recordedAt),
+  check('suction_pressure_milliunits_check', sql`${table.suctionPressureMilliunits} IS NULL OR ${table.suctionPressureMilliunits} >= 0`),
+  check('discharge_pressure_milliunits_check', sql`${table.dischargePressureMilliunits} IS NULL OR ${table.dischargePressureMilliunits} >= 0`),
+  check('cascade_pressure_milliunits_check', sql`${table.cascadePressureMilliunits} IS NULL OR ${table.cascadePressureMilliunits} >= 0`),
+  check('at_least_one_pressure_check', sql`${table.suctionPressureMilliunits} IS NOT NULL OR ${table.dischargePressureMilliunits} IS NOT NULL OR ${table.cascadePressureMilliunits} IS NOT NULL`),
 ]);
 

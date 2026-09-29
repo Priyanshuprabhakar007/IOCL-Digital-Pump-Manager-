@@ -544,4 +544,152 @@ describe('Phase 3A-1 CNG Operations Integration Suite', () => {
     const audits = await db.select().from(schema.auditLogs).where(eq(schema.auditLogs.action, 'CNG_SHIFT_LOG_CREATE'));
     expect(audits.length).toBe(1);
   });
+
+  it('39. pressure update race NOT_FOUND classified correctly', async () => {
+    const { cookie } = await loginAs();
+    const res = await app.fetch(
+      new Request('http://localhost/api/v1/cng-pressure-readings/non-existent-id', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Cookie: cookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({ recordedAt: new Date().toISOString(), pressureUnit: 'bar', suctionPressure: '10.0' }),
+      }),
+      env
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it('40. pressure update SHIFT_CLOSED classified correctly', async () => {
+    const { cookie } = await loginAs();
+    const shiftId = await openShift(cookie);
+    const db = getDb(localD1);
+    await db.insert(schema.outletProducts).values({
+        id: 'op-ro1-cng', outletId: 'ro-1001', productId: 'prod-cng', status: 'ACTIVE', createdAt: new Date().toISOString(), createdBy: 'user-admin'
+    });
+
+    const resPost = await app.fetch(
+      new Request(`http://localhost/api/v1/shifts/${shiftId}/cng-pressure-readings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: cookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({ recordedAt: new Date().toISOString(), pressureUnit: 'bar', suctionPressure: '10.0' }),
+      }),
+      env
+    );
+    const reading = (await resPost.json() as any).data;
+
+    // Close shift
+    await db.update(schema.operationalShifts).set({ status: 'CLOSED' }).where(eq(schema.operationalShifts.id, shiftId));
+
+    const resPut = await app.fetch(
+      new Request(`http://localhost/api/v1/cng-pressure-readings/${reading.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Cookie: cookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({ recordedAt: new Date().toISOString(), pressureUnit: 'bar', suctionPressure: '12.0' }),
+      }),
+      env
+    );
+    expect(resPut.status).toBe(409);
+  });
+
+  it('41. pressure delete SHIFT_CLOSED classified correctly', async () => {
+    const { cookie } = await loginAs();
+    const shiftId = await openShift(cookie);
+    const db = getDb(localD1);
+    await db.insert(schema.outletProducts).values({
+        id: 'op-ro1-cng', outletId: 'ro-1001', productId: 'prod-cng', status: 'ACTIVE', createdAt: new Date().toISOString(), createdBy: 'user-admin'
+    });
+
+    const resPost = await app.fetch(
+      new Request(`http://localhost/api/v1/shifts/${shiftId}/cng-pressure-readings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: cookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({ recordedAt: new Date().toISOString(), pressureUnit: 'bar', suctionPressure: '10.0' }),
+      }),
+      env
+    );
+    const reading = (await resPost.json() as any).data;
+
+    // Close shift
+    await db.update(schema.operationalShifts).set({ status: 'CLOSED' }).where(eq(schema.operationalShifts.id, shiftId));
+
+    const resDel = await app.fetch(
+      new Request(`http://localhost/api/v1/cng-pressure-readings/${reading.id}`, {
+        method: 'DELETE',
+        headers: { Cookie: cookie, Origin: 'http://localhost:3000' },
+      }),
+      env
+    );
+    expect(resDel.status).toBe(409);
+  });
+
+  it('42. pressure update requires active CNG product', async () => {
+    const { cookie } = await loginAs();
+    const shiftId = await openShift(cookie);
+    const db = getDb(localD1);
+    await db.insert(schema.outletProducts).values({
+        id: 'op-ro1-cng', outletId: 'ro-1001', productId: 'prod-cng', status: 'ACTIVE', createdAt: new Date().toISOString(), createdBy: 'user-admin'
+    });
+
+    const resPost = await app.fetch(
+      new Request(`http://localhost/api/v1/shifts/${shiftId}/cng-pressure-readings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: cookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({ recordedAt: new Date().toISOString(), pressureUnit: 'bar', suctionPressure: '10.0' }),
+      }),
+      env
+    );
+    const reading = (await resPost.json() as any).data;
+
+    // Deactivate CNG product for outlet
+    await db.update(schema.outletProducts).set({ status: 'INACTIVE' }).where(eq(schema.outletProducts.id, 'op-ro1-cng'));
+
+    const resPut = await app.fetch(
+      new Request(`http://localhost/api/v1/cng-pressure-readings/${reading.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Cookie: cookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({ recordedAt: new Date().toISOString(), pressureUnit: 'bar', suctionPressure: '12.0' }),
+      }),
+      env
+    );
+    expect(resPut.status).toBe(409);
+    expect((await resPut.json() as any).error.code).toBe('CNG_NOT_AVAILABLE_AT_OUTLET');
+  });
+
+  it('43. grid variance is null if some shifts missing grid data', async () => {
+    const { cookie } = await loginAs();
+    const db = getDb(localD1);
+    await db.insert(schema.outletProducts).values({
+        id: 'op-ro1-cng', outletId: 'ro-1001', productId: 'prod-cng', status: 'ACTIVE', createdAt: new Date().toISOString(), createdBy: 'user-admin'
+    });
+
+    // Shift 1 has grid data
+    const shiftId1 = await openShift(cookie, 'ro-1001', '2026-11-20');
+    await app.fetch(new Request(`http://localhost/api/v1/shifts/${shiftId1}/cng-log`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json', Cookie: cookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({ mfmOpeningKg: '0.000', mfmClosingKg: '100.000', gridIntakeKg: '105.000' }),
+    }), env);
+    await db.update(schema.operationalShifts).set({ status: 'CLOSED' }).where(eq(schema.operationalShifts.id, shiftId1));
+
+    // Shift 2 missing grid data
+    const res2 = await app.fetch(new Request(`http://localhost/api/v1/outlets/ro-1001/shifts/open`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({ shiftTemplateId: 'st-ro1-2', businessDate: '2026-11-20' }),
+    }), env);
+    const shiftId2 = (await res2.json() as any).data.id;
+
+    await app.fetch(new Request(`http://localhost/api/v1/shifts/${shiftId2}/cng-log`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json', Cookie: cookie, Origin: 'http://localhost:3000' },
+        body: JSON.stringify({ mfmOpeningKg: '100.000', mfmClosingKg: '250.000' }),
+    }), env);
+
+    const summaryRes = await app.fetch(
+      new Request('http://localhost/api/v1/outlets/ro-1001/cng/daily-summary?businessDate=2026-11-20', {
+        headers: { Cookie: cookie, Origin: 'http://localhost:3000' },
+      }),
+      env
+    );
+    const summary: any = await summaryRes.json();
+    expect(summary.data.gridDataComplete).toBe(false);
+    expect(summary.data.gridIntakeKg).toBe('105.000');
+    expect(summary.data.gridSalesVarianceKg).toBeNull();
+  });
 });

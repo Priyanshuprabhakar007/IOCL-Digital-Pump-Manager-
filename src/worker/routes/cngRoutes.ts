@@ -139,7 +139,7 @@ cngRoutes.put('/cng-pressure-readings/:id', requirePermission(PERMISSIONS.CNG_OP
 
   const res = await cngService.updatePressureReading(id, c.var.user!.user.id, parseResult.data);
   if (!res.success) {
-    const status = res.error === 'SHIFT_CLOSED' ? 409 : (res.error === 'NOT_FOUND' ? 404 : 400);
+    const status = (res.error === 'SHIFT_CLOSED' || res.error === 'CNG_NOT_AVAILABLE_AT_OUTLET') ? 409 : (res.error === 'NOT_FOUND' ? 404 : 400);
     return c.json({ success: false, data: null, error: { code: res.error!, message: 'Update failed' } }, status);
   }
 
@@ -162,7 +162,7 @@ cngRoutes.delete('/cng-pressure-readings/:id', requirePermission(PERMISSIONS.CNG
 
   const res = await cngService.deletePressureReading(id, c.var.user!.user.id);
   if (!res.success) {
-    const status = res.error === 'SHIFT_CLOSED' ? 409 : (res.error === 'NOT_FOUND' ? 404 : 400);
+    const status = (res.error === 'SHIFT_CLOSED' || res.error === 'CNG_NOT_AVAILABLE_AT_OUTLET') ? 409 : (res.error === 'NOT_FOUND' ? 404 : 400);
     return c.json({ success: false, data: null, error: { code: res.error!, message: 'Delete failed' } }, status);
   }
 

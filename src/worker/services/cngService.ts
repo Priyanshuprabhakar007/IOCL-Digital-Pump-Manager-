@@ -148,6 +148,9 @@ export class CngService {
     const existing = await this.cngRepo.findPressureReadingById(id);
     if (!existing) return { success: false, reading: null, error: 'NOT_FOUND' };
 
+    const isAvailable = await this.cngRepo.isCngAvailableAtOutlet(existing.outletId);
+    if (!isAvailable) return { success: false, reading: null, error: 'CNG_NOT_AVAILABLE_AT_OUTLET' };
+
     const nowIso = new Date().toISOString();
     const updateData = {
       recordedAt: data.recordedAt,
@@ -161,7 +164,8 @@ export class CngService {
 
     const res = await this.cngRepo.updatePressureReading(id, updateData);
     if (!res.success) {
-      if (res.shiftClosed) return { success: false, reading: null, error: 'SHIFT_CLOSED' };
+      if (res.reason === 'SHIFT_CLOSED') return { success: false, reading: null, error: 'SHIFT_CLOSED' };
+      if (res.reason === 'NOT_FOUND') return { success: false, reading: null, error: 'NOT_FOUND' };
       return { success: false, reading: null, error: 'UPDATE_FAILED' };
     }
 
@@ -185,9 +189,13 @@ export class CngService {
     const existing = await this.cngRepo.findPressureReadingById(id);
     if (!existing) return { success: false, error: 'NOT_FOUND' };
 
+    const isAvailable = await this.cngRepo.isCngAvailableAtOutlet(existing.outletId);
+    if (!isAvailable) return { success: false, error: 'CNG_NOT_AVAILABLE_AT_OUTLET' };
+
     const res = await this.cngRepo.deletePressureReading(id);
     if (!res.success) {
       if (res.reason === 'SHIFT_CLOSED') return { success: false, error: 'SHIFT_CLOSED' };
+      if (res.reason === 'NOT_FOUND') return { success: false, error: 'NOT_FOUND' };
       return { success: false, error: 'DELETE_FAILED' };
     }
 
@@ -209,21 +217,25 @@ export class CngService {
     
     let totalSalesMilli = 0;
     let totalGridMilli = 0;
-    let hasGrid = false;
-    let gridDataComplete = true;
+    let anyShiftHasGrid = false;
+    let allShiftsHaveGrid = true;
+
+    if (logs.length === 0) {
+      allShiftsHaveGrid = false;
+    }
 
     for (const log of logs) {
       totalSalesMilli += log.netSalesKgMilliunits;
       if (log.gridIntakeKgMilliunits != null) {
         totalGridMilli += log.gridIntakeKgMilliunits;
-        hasGrid = true;
+        anyShiftHasGrid = true;
       } else {
-        gridDataComplete = false;
+        allShiftsHaveGrid = false;
       }
     }
 
-    const gridIntakeKgMilliunits = hasGrid ? totalGridMilli : null;
-    const gridSalesVarianceKgMilliunits = hasGrid ? totalGridMilli - totalSalesMilli : null;
+    const gridIntakeKgMilliunits = anyShiftHasGrid ? totalGridMilli : null;
+    const gridSalesVarianceKgMilliunits = allShiftsHaveGrid ? totalGridMilli - totalSalesMilli : null;
 
     return {
       outletId,
@@ -235,7 +247,7 @@ export class CngService {
       gridSalesVarianceKgMilliunits,
       gridSalesVarianceKg: gridSalesVarianceKgMilliunits != null ? formatMilliunits(gridSalesVarianceKgMilliunits) : null,
       shiftCount: logs.length,
-      gridDataComplete: logs.length > 0 ? gridDataComplete : false
+      gridDataComplete: allShiftsHaveGrid
     };
   }
 }
