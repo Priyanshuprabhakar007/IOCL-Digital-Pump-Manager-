@@ -94,6 +94,11 @@ async function startServer() {
               reqOriginHost === host ||
               reqOriginHost.split(':')[0] === currentHost ||
               reqOriginHost.endsWith('.run.app') ||
+              reqOriginHost.endsWith('.google.com') ||
+              reqOriginHost.endsWith('.googleusercontent.com') ||
+              reqOriginHost.endsWith('.goog') ||
+              reqOriginHost.endsWith('.web.app') ||
+              reqOriginHost.endsWith('.firebaseapp.com') ||
               reqOriginHost === 'localhost' ||
               reqOriginHost === '127.0.0.1'
             ) {
